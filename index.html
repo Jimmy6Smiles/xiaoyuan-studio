@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#28251f">
+  <meta name="description" content="Walk through Xiaoyuan Ma's studio for photography, camera engineering, and software.">
+  <title>The Studio · Xiaoyuan Ma</title>
+  <link rel="stylesheet" href="studio.css">
+</head>
+<body>
+  <div id="studioLoader" role="status">
+    <div class="loadMark"><span>Opening the studio</span><progress id="studioProgress" max="9" value="0" aria-label="Studio loading progress"></progress></div>
+  </div>
+  <main id="stage" aria-label="Interactive studio">
+    <p id="renderNotice" hidden>3D view unavailable</p>
+    <canvas id="room" aria-label="Studio interior. Use the station navigation to explore."></canvas>
+    <div id="projectTargets" role="group" aria-label="Select a project for the workstation monitors" hidden></div>
+    <div id="profileTargets" role="group" aria-label="Biography and experience links" hidden></div>
+    <div id="playlistTargets" role="group" aria-label="On rotation · Apple Music tracks" hidden></div>
+    <div id="lensTargets" role="group" aria-label="Projected camera project" hidden></div>
+    <div class="shade" aria-hidden="true"></div>
+    <header>
+      <a class="signature" href="#entrance" aria-label="Xiaoyuan Ma, studio entrance"><span class="aperture" aria-hidden="true">◉</span> Xiaoyuan Ma</a>
+      <button class="indexBtn glass" id="openIndex" aria-expanded="false" aria-controls="indexPanel"><span aria-hidden="true">☷</span> Studio index</button>
+    </header>
+    <section class="caption" aria-live="polite">
+      <div class="eyebrow"><i></i><span id="kicker">The Studio</span></div>
+      <h1 id="stationTitle">Xiaoyuan Ma</h1>
+      <p id="intro">Photography, software &amp; camera engineering</p>
+      <button class="more" id="more">About &amp; Experience <span aria-hidden="true">↗</span></button>
+      <a class="more" id="previousPortfolio" href="https://kangaroo-blackbird-nllb.squarespace.com/home-2" target="_top">Previous portfolio <span aria-hidden="true">↗</span></a>
+      <button class="more" id="readExperience" hidden>Work experience <span aria-hidden="true">↗</span></button>
+      <button class="more" id="viewPlaylist" hidden>View playlist</button>
+      <button class="more" id="guitarSound" hidden>Enable guitar sound</button>
+      <button class="more" id="darkroomLight" hidden>Use white light</button>
+      <button class="more" id="backToWall" hidden>Back to wall</button>
+    </section>
+    <footer>
+      <nav id="stations" aria-label="Studio stations"></nav>
+      <div class="hint" id="hint">Drag to look <b>·</b> Use ← → to explore</div>
+    </footer>
+    <aside id="indexPanel" hidden aria-label="Studio index"><div class="panelHead"><span>Studio index</span><button class="close" id="closeIndex" aria-label="Close studio index">×</button></div><nav id="indexList" aria-label="Jump to a station"></nav></aside>
+    <dialog id="detail"><div class="dialog-inner"><div class="panelHead"><span id="detailType"></span><button class="close" id="closeDetail" aria-label="Close station notes">×</button></div><h2 id="detailTitle"></h2><div id="notes"></div></div></dialog>
+  </main>
+  <script src="profile-wall.js"></script>
+  <script src="playlist.js"></script>
+  <script src="lens-projects.js"></script>
+  <script src="studio.js"></script>
+  <script src="project-desk.js"></script>
+  <script src="kawaguchi-mesh.js"></script>
+  <script src="kawaguchi-light.js"></script>
+  <script src="visibility.js"></script>
+  <script src="lakeside.js"></script>
+  <script src="window-focus.js"></script>
+  <script src="window-glass.js"></script>
+  <script src="rangefinder.js"></script>
+  <script src="guitars.js"></script>
+  <script src="room.js"></script>
+</body>
+</html>

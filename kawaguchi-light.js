@@ -1,0 +1,1 @@
+const kawaguchiLight={"sun":[0.6642136358303787,0.12412104356139257,0.7371663397919224],"origin":[0.4690597529601064,0.1937078538297783],"terrain":"kawaguchi-autumn.jpg","visibility":"kawaguchi-sun-mask.png","sky":"kawaguchi-evening-sky.jpg","canopy":"kawaguchi-canopies.png","fuji":"fuji-ravines.jpg","fujiUV":[0.25,0.5625,4.0]};
