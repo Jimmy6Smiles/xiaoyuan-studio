@@ -2,7 +2,7 @@
 function initializeStudioRoom(){
   const canvas = document.querySelector('#room');
   if (!canvas) return;
-  const gl = canvas.getContext('webgl', {antialias:true,alpha:true});
+  const gl = canvas.getContext('webgl', {antialias:true,alpha:true,powerPreference:'high-performance'});
   if (!gl){studioLoading.unavailable();return;}
   const vertex = `
   attribute vec3 p,n,c; attribute vec2 uv; attribute float m;
@@ -1357,11 +1357,22 @@ function initializeStudioRoom(){
     return [first,vertices.length/12-first];
   });
   const buffer=gl.createBuffer();
+  const roomIndices=gl.getExtension('OES_element_index_uint') && gl.createBuffer();
+  function drawRoom(first,count){
+    if(roomIndices)gl.drawElements(gl.TRIANGLES,count,gl.UNSIGNED_INT,first*4);
+    else gl.drawArrays(gl.TRIANGLES,first,count);
+  }
   let measureCenter;
   const chunks=(()=>{
     const layout=studioVisibility.roomChunks(vertices,[windowStart,windowEnd,curtainStart,curtainEnd,photosStart,photosEnd,casterCount,solidCount]);
-    gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,layout.packed,gl.STATIC_DRAW);
     measureCenter=studioVisibility.centerMeter(layout.packed,layout.chunks,solidCount);
+    gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+    if(roomIndices){
+      const mesh=studioVisibility.indexRoom(layout.packed);
+      gl.bufferData(gl.ARRAY_BUFFER,mesh.vertices,gl.STATIC_DRAW);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,roomIndices);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,mesh.indices,gl.STATIC_DRAW);
+    }else gl.bufferData(gl.ARRAY_BUFFER,layout.packed,gl.STATIC_DRAW);
     vertices.length=0;return layout.chunks;
   })();
   const curtainChunks=chunks.filter(c=>c[0]>=curtainStart && c[0]<curtainEnd);
@@ -1417,8 +1428,8 @@ function initializeStudioRoom(){
       gl.clearColor(1,1,1,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
       gl.colorMask(true,true,false,false);
       // windowSun already projects the side opening and its mullions analytically.
-      gl.drawArrays(gl.TRIANGLES,0,windowStart);
-      gl.drawArrays(gl.TRIANGLES,windowEnd,casterCount-windowEnd);
+      drawRoom(0,windowStart);
+      drawRoom(windowEnd,casterCount-windowEnd);
       // Use the same fixture-local basis as the receiving surface in the shader.
       // Store linear depth so penumbra size follows the blocker/receiver separation.
       gl.colorMask(false,false,true,true);gl.uniform1i(overheadPass,1);
@@ -1432,7 +1443,7 @@ function initializeStudioRoom(){
         matrix.push(-dot(origin,right)/lampSlope,-dot(origin,up)/lampSlope,a*shift+b,shift);
         gl.viewport(i%2*tile,Math.floor(i/2)*tile,tile,tile);gl.clear(gl.DEPTH_BUFFER_BIT);
         gl.uniformMatrix4fv(projection,false,matrix);
-        gl.drawArrays(gl.TRIANGLES,0,casterCount);
+        drawRoom(0,casterCount);
       });
       gl.colorMask(true,true,true,true);
       gl.disableVertexAttribArray(point);gl.enable(gl.DITHER);
@@ -1461,6 +1472,7 @@ function initializeStudioRoom(){
   const roomLayout=[['p',3],['n',3],['c',3],['uv',2],['m',1]].map(([name,size])=>[gl.getAttribLocation(program,name),size]);
   function bindRoom(){
     gl.useProgram(program);gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,roomIndices||null);
     let offset=0;
     for(const [i,size] of roomLayout){
       gl.enableVertexAttribArray(i);gl.vertexAttribPointer(i,size,gl.FLOAT,false,48,offset);offset+=size*4;
@@ -1665,12 +1677,11 @@ function initializeStudioRoom(){
   const roomImagesReady=Promise.allSettled([source.decode(),cameraFinish.decode(),suedePile.decode(),profilePortrait.decode(),playlistCovers.decode(),galleryImage.decode(),tableImage.decode(),darkroomImage.decode()]);
   roomImagesReady.then(()=>{imageReady();studioLoading.done('prints');requestRender();});
   function drawOpaqueSurfaces(inView){
-    const draw=(first,count)=>gl.drawArrays(gl.TRIANGLES,first,count);
-    studioVisibility.drawRanges(fixedChunks,inView,draw);
+    studioVisibility.drawRanges(fixedChunks,inView,drawRoom);
     gl.bindTexture(gl.TEXTURE_2D,photoMap);
-    studioVisibility.drawRanges(photoChunks,inView,draw);
+    studioVisibility.drawRanges(photoChunks,inView,drawRoom);
     gl.bindTexture(gl.TEXTURE_2D,suedeMap);
-    studioVisibility.drawRanges(curtainChunks,inView,draw);
+    studioVisibility.drawRanges(curtainChunks,inView,drawRoom);
     gl.bindTexture(gl.TEXTURE_2D,texture);
   }
   function drawPrintedSurfaces(frustum){
@@ -1678,7 +1689,7 @@ function initializeStudioRoom(){
     for(const [bounds,map] of [[profileFace,profileMap],[recordFaces,recordMap],[tableFaces,tableMap],[darkroomFaces,darkroomMap]]){
       if(!map || !studioVisibility.intersects(bounds,frustum))continue;
       gl.bindTexture(gl.TEXTURE_2D,map);
-      gl.drawArrays(gl.TRIANGLES,bounds[0],bounds[1]);
+      drawRoom(bounds[0],bounds[1]);
     }
     gl.bindTexture(gl.TEXTURE_2D,texture);
   }
@@ -1711,6 +1722,8 @@ function initializeStudioRoom(){
   const indoorPower=1/4.5;
   let focusPull=null,manualWeight=0,manualPower=indoorPower,meterTarget=indoorPower;
   let lastMeterTime=-Infinity,meterPose=null,focusLayers=null,ambientTimer=0;
+  let pixelBudget=2073600, sampleTime=0, sampleCount=0, lastActiveFrame=0;
+  let stillDetail=false;
   // One browser viewport of scrolling connects adjacent views within a workspace.
   // Gallery frames share an eye height and wall distance, so the wall passes parallel to the viewer.
   const firstLensStop=2;
@@ -2042,8 +2055,25 @@ function initializeStudioRoom(){
   });
   function render(now){raf=0;
     clearTimeout(ambientTimer);
-    if(!studioLoading.canDraw())return;
-    const css=canvas.getBoundingClientRect();if(!css.width||!css.height)return;const pixel=Math.min(devicePixelRatio||1,1.65),w=Math.max(1,Math.round(css.width*pixel)),h=Math.max(1,Math.round(css.height*pixel));
+    if(document.hidden || !studioLoading.canDraw())return;
+    const css=canvas.getBoundingClientRect();if(!css.width||!css.height)return;
+    // Only time consecutive animation frames. Intentional pauses between ambient
+    // updates, a background tab and time spent reading a print are not GPU load.
+    const interval=now-lastActiveFrame;
+    if(lastActiveFrame && interval>0 && interval<600){
+      sampleTime+=interval;sampleCount++;
+      if(sampleTime>=800 && sampleCount>=4){
+        const mean=sampleTime/sampleCount;
+        if(mean>28)pixelBudget=Math.max(360000,pixelBudget*Math.max(.48,21/mean));
+        else if(mean<17)pixelBudget=Math.min(2073600,pixelBudget*1.12);
+        sampleTime=0;sampleCount=0;
+      }
+    }else{sampleTime=0;sampleCount=0;}
+    lastActiveFrame=0;
+    const resting=stillDetail && !drag && !journey && !slide && !focusPull;
+    const budget=resting?4147200:pixelBudget;
+    const pixel=Math.min(devicePixelRatio||1,1.65,Math.sqrt(budget/(css.width*css.height)));
+    const w=Math.max(1,Math.round(css.width*pixel)),h=Math.max(1,Math.round(css.height*pixel));
     if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}gl.viewport(0,0,w,h);
     let [dest,aim,angle]=stations[index];
     if(index===0 && w<h)angle=70;
@@ -2236,14 +2266,18 @@ function initializeStudioRoom(){
     // A moving drape needs fresh indoor colour. A stationary view can still
     // reuse the exterior in the glass, including its reflected landscape.
     const useLayer=lensScale>.15 && lensAvailable;
+    // A moving view already redraws the lake. Shade its waves in that pass;
+    // reserve the full-frame water copy for animating a stationary view.
+    const separateWaves=lensAvailable && !reducedMotion.matches && !(journey || moving || looking || metering);
     const reuseOutside=lensAvailable && focusLayers && focusLayers.w===w && focusLayers.h===h &&
       focusLayers.reduced===reducedMotion.matches && focusLayers.dark===insideDarkroom &&
+      focusLayers.separateWaves===separateWaves &&
       (focusLayers.water || !portals.length || focusLayers.waterBlur===waterBlur) &&
       mat.every((v,i)=>v===focusLayers.matrix[i]);
     const reuse=useLayer && reuseOutside && focusLayers.interior && focusLayers.linkLit===linkLit && !sway && !animateProjection;
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     if(reuseOutside)cancelWaves();
-    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,viewEye,texture,floorMap,portals,lensAvailable && !reducedMotion.matches,waterBlur);
+    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,viewEye,texture,floorMap,portals,separateWaves,waterBlur);
     if(lensAvailable && portals.length)drawWindowGlass(mat,viewEye,portals,w,h,waterBlur,texture,!reuseOutside);
     const blurInterior=useLayer && (reuse || windowLens.begin(w,h));
     if(!reuse){
@@ -2262,7 +2296,7 @@ function initializeStudioRoom(){
       gl.enable(gl.BLEND);gl.blendFuncSeparate(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA,gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
       const viewDepth=g=>dot(sub(g.center,viewEye),forward);
       transparentGroups.sort((a,b)=>viewDepth(b)-viewDepth(a));
-      for(const g of transparentGroups)if(inView(g.bounds))gl.drawArrays(gl.TRIANGLES,g.first,g.count);
+      for(const g of transparentGroups)if(inView(g.bounds))drawRoom(g.first,g.count);
       if(reveal>0){
         gl.uniform1f(projectionUniform,reveal);
         gl.uniform1f(projectionTimeUniform,projectionSeconds);
@@ -2270,18 +2304,24 @@ function initializeStudioRoom(){
         else gl.uniform4f(linkFrameUniform,0,0,0,0);
         if(!lensMaps[lens])lensMaps[lens]=materialTexture('atlas',0,paintLensPanel(lensProjects[lens],lens,lensLink),false);
         gl.bindTexture(gl.TEXTURE_2D,lensMaps[lens]);
-        gl.drawArrays(gl.TRIANGLES,...lensRanges[lens]);
+        drawRoom(...lensRanges[lens]);
         gl.bindTexture(gl.TEXTURE_2D,texture);
       }
       gl.depthMask(true);gl.disable(gl.BLEND);
-      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,linkLit};
+      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,separateWaves,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,linkLit};
     }
     if(blurInterior)windowLens.finish(lensScale,opticalPower,viewEye[0],texture);
     if(animateWater)finishWater(basis,texture,!(sway || animateProjection || journey || moving || looking || lensMoving),waterBlur);
 
     shown=true;studioLoading.frame();
-    if(journey || moving || looking || lensMoving || deskMoving || wiresMoving || sleevesMoving || trackingWindow)requestRender();
-    else if((sway || animateProjection) && !gl.isContextLost())ambientTimer=setTimeout(requestRender,1000/24);}
+    if(journey || moving || looking || lensMoving || deskMoving || wiresMoving || sleevesMoving || trackingWindow){
+      stillDetail=false;lastActiveFrame=now;requestRender();
+    }else if((sway || animateProjection) && !gl.isContextLost()){
+      stillDetail=false;ambientTimer=setTimeout(requestRender,1000/24);
+    }else if(!stillDetail && !drag && !animateWater && (index===1 || index===4 || index===aboutStation)){
+      // Redraw settled photographs at reading resolution once motion has stopped.
+      ambientTimer=setTimeout(()=>{stillDetail=true;requestRender();},180);
+    }}
   function requestRender(){if(!raf)raf=requestAnimationFrame(render);}
   let displayedProject=selectedProject;
   window.studioRoom={toggleGuitarSound(){guitarSound.toggle();},returnToWall(){setGuitarClose(false);},
