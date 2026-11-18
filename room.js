@@ -90,6 +90,17 @@ function initializeStudioRoom(){
     vec2 grid=lightUV.xy/shadowPixel-.5;
     vec2 cell=floor(grid),phase=fract(grid);
     float visible=0.;
+    if(fastShadows){
+      for(int x=0;x<2;x++)for(int y=0;y<2;y++){
+        vec2 offset=vec2(float(x),float(y));
+        vec2 uv=(cell+offset+.5)*shadowPixel;
+        vec2 rg=texture2D(shadowDepth,uv).rg;
+        vec2 weight=1.-abs(offset-phase);
+        float receiver=lightUV.z+dot(slope,uv-lightUV.xy);
+        visible+=weight.x*weight.y*step(receiver-.00018,rg.r+rg.g/255.);
+      }
+      return visible;
+    }
     // Tent weights follow the receiver continuously across shadow texel boundaries.
     for(int x=-1;x<=2;x++)for(int y=-1;y<=2;y++){
       vec2 offset=vec2(float(x),float(y));
@@ -1215,7 +1226,9 @@ function initializeStudioRoom(){
   }
 
   frontSheet(6,3.84,1.09,1.56,.37,.23);
-  box(-3.65,2.9,-2.776,1.90,.25,.035,'322b25',1);frontSheet(7,-3.65,2.91,-2.754,1.84,.22);
+  const darkroomSign={width:1.84,height:.22};
+  box(-3.65,2.9,-2.776,1.90,.25,.035,'322b25',1);
+  frontSheet(7,-3.65,2.915,-2.754,darkroomSign.width,darkroomSign.height);
   prints.forEach((z,i)=>{
     box(-5.776,.808,z,.018,.192,.768,'c8c1b3');
     sheetCorners(8+i,[[-5.766,.808,z+.384],[-5.766,.808,z-.384],
@@ -1515,7 +1528,21 @@ function initializeStudioRoom(){
   });
   const deskGraphics=createProjectDeskGraphics(gl,program,studioProjects,selectedProject);
   drawTile(6,()=>{fill(0,0,512,256,'#25322c');for(let i=0;i<18;i++)rule(i*30,0,i*30,256,'#4b5950');for(let i=0;i<10;i++)rule(0,i*30,512,i*30,'#4b5950');for(let i=0;i<512;i++)rule(i,125+54*Math.sin(i*.048),i+1,125+54*Math.sin((i+1)*.048),'#bada8e',3);letter('CH 1    2.00 V',15,30,16,'#c4d295');});
-  drawTile(7,()=>{fill(0,0,512,256,'#34302a');letter('D A R K R O O M',30,153,50,'#e7dcc8','Georgia');});
+  drawTile(7,()=>{
+    fill(0,0,512,256,'#302c27');
+    // Typeset in the mounted face's proportions before mapping it to the atlas.
+    const faceHeight=512*darkroomSign.height/darkroomSign.width;
+    ctx.scale(1,256/faceHeight);
+    ctx.font='bold '+Math.round(faceHeight*.97)+'px Arial, sans-serif';
+    ctx.fillStyle='#fff2dc';
+    const letters=Array.from('DARKROOM');
+    const widths=letters.map(c=>ctx.measureText(c).width);
+    const margin=512*.08,tracking=(512-2*margin-widths.reduce((a,b)=>a+b,0))/(letters.length-1);
+    const ink=ctx.measureText('DARKROOM');
+    const baseline=(faceHeight+ink.actualBoundingBoxAscent-ink.actualBoundingBoxDescent)/2;
+    let x=margin;
+    letters.forEach((c,i)=>{ctx.fillText(c,x,baseline);x+=widths[i]+tracking;});
+  });
   ctx.font='44px Georgia';
   const longestTitle=Math.max(...galleryPrints.map(({title})=>ctx.measureText(title).width));
   const plaqueType=Math.min(44,44*464/longestTitle);
@@ -2217,7 +2244,8 @@ function initializeStudioRoom(){
     // Time camera travel only. Water, curtains and projection glitches continue
     // at reading resolution once the visitor stops moving the camera.
     const returningFromPan=!drag && !press && Math.abs(yaw)+Math.abs(pitch)>.003;
-    const cameraMoving=!!(journey || moving || focusPull || panChanged || returningFromPan);
+    const hoverMoving=Math.abs(wantX-hoverX)+Math.abs(wantY-hoverY)>.003;
+    const cameraMoving=!!(journey || moving || focusPull || panChanged || returningFromPan || hoverMoving);
     panChanged=false;
     const cssPixels=css.width*css.height;
     const minMotionPixels=Math.min(1920*1080,cssPixels*.72*.72);
@@ -2237,7 +2265,7 @@ function initializeStudioRoom(){
     const budget=inMotionQuality?Math.max(minMotionPixels,motionPixels):maxStillPixels;
     const scale=Math.min(devicePixelRatio||1,Math.sqrt(budget/cssPixels),maxTextureSize/Math.max(css.width,css.height));
     const w=Math.max(1,Math.round(css.width*scale)),h=Math.max(1,Math.round(css.height*scale));
-    const fastSampling=inMotionQuality && scale<1;
+    const fastSampling=inMotionQuality;
     if(canvas.width!==w)canvas.width=w;
     if(canvas.height!==h)canvas.height=h;
     gl.viewport(0,0,w,h);
@@ -2287,13 +2315,13 @@ function initializeStudioRoom(){
     const separateWaves=lensAvailable && !reducedMotion.matches && !(journey || moving || looking || metering);
     const reuseOutside=lensAvailable && focusLayers && focusLayers.w===w && focusLayers.h===h &&
       focusLayers.reduced===reducedMotion.matches && focusLayers.dark===insideDarkroom &&
-      focusLayers.separateWaves===separateWaves &&
+      focusLayers.separateWaves===separateWaves && focusLayers.fastSampling===fastSampling &&
       (focusLayers.water || !portals.length || focusLayers.waterBlur===waterBlur) &&
       mat.every((v,i)=>v===focusLayers.matrix[i]);
-    const reuse=useLayer && reuseOutside && focusLayers.interior && focusLayers.fastSampling===fastSampling && focusLayers.linkLit===linkLit && !sway && !animateProjection;
+    const reuse=useLayer && reuseOutside && focusLayers.interior && focusLayers.linkLit===linkLit && !sway && !animateProjection;
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     if(reuseOutside)cancelWaves();
-    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,viewEye,texture,floorMap,portals,separateWaves,waterBlur);
+    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,viewEye,texture,floorMap,portals,separateWaves,waterBlur,fastSampling);
     if(lensAvailable && portals.length)drawWindowGlass(mat,viewEye,portals,w,h,waterBlur,texture,!reuseOutside);
     const blurInterior=useLayer && (reuse || windowLens.begin(w,h));
     if(!reuse){
