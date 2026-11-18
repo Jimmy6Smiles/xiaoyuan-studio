@@ -19,6 +19,7 @@ function createWindowFocus(gl){
       uniform sampler2D room,depthMap;
       uniform vec2 size;
       uniform float lensRadius,maxRadius,hasDepth,openingDepth,focusPower;
+      uniform bool fastSampling;
       float radiusAt(vec2 uv){
         float depth=texture2D(depthMap,uv).r;
         float reciprocal=(1.001-depth)/.04004;
@@ -35,6 +36,7 @@ function createWindowFocus(gl){
         // Expand near silhouettes over the clear layer. This also catches thin
         // lens barrels and mullions with no depth at the destination pixel.
         for(int i=0;i<8;i++){
+          if(fastSampling && mod(float(i),2.)>0.)continue;
           float a=float(i)*.785398;
           vec2 side=vec2(cos(a),sin(a))/size;
           float probe=maxRadius*.44;
@@ -44,12 +46,14 @@ function createWindowFocus(gl){
         vec4 sharp=texture2D(room,uv);
         if(radius<.30){gl_FragColor=sharp;return;}
         vec4 sum=sharp;
+        float samples=fastSampling?12.:32.;
         for(int i=0;i<32;i++){
+          if(float(i)>=samples)break;
           float k=float(i)+.5,angle=k*2.399963;
-          vec2 disk=sqrt(k/32.)*vec2(cos(angle),sin(angle));
+          vec2 disk=sqrt(k/samples)*vec2(cos(angle),sin(angle));
           sum+=texture2D(room,uv+disk*radius/size);
         }
-        gl_FragColor=mix(sharp,sum/33.,smoothstep(.30,1.,radius));
+        gl_FragColor=mix(sharp,sum/(1.+samples),smoothstep(.30,1.,radius));
       }`]]){
     const shader=gl.createShader(type);gl.shaderSource(shader,source);gl.compileShader(shader);
     if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(shader));
@@ -57,7 +61,7 @@ function createWindowFocus(gl){
   }
   gl.linkProgram(program);
   if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program));
-  const uniforms=Object.fromEntries(['room','depthMap','size','lensRadius','maxRadius','hasDepth','openingDepth','focusPower'].map(n=>[n,gl.getUniformLocation(program,n)]));
+  const uniforms=Object.fromEntries(['room','depthMap','size','lensRadius','maxRadius','hasDepth','openingDepth','focusPower','fastSampling'].map(n=>[n,gl.getUniformLocation(program,n)]));
   const corner=gl.getAttribLocation(program,'corner'),triangle=gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER,triangle);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
@@ -99,12 +103,13 @@ function createWindowFocus(gl){
     gl.bindBuffer(gl.ARRAY_BUFFER,triangle);
     gl.enableVertexAttribArray(corner);gl.vertexAttribPointer(corner,2,gl.FLOAT,false,0,0);
   }
-  function finish(scale,power,eyeX,roomAtlas){
+  function finish(scale,power,eyeX,roomAtlas,fastSampling){
     gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.useProgram(program);
     gl.bindTexture(gl.TEXTURE_2D,color);
     gl.activeTexture(gl.TEXTURE5);gl.bindTexture(gl.TEXTURE_2D,useDepth?depth:color);
     gl.uniform1i(uniforms.room,0);gl.uniform1i(uniforms.depthMap,5);
     gl.uniform1f(uniforms.hasDepth,useDepth?1:0);
+    gl.uniform1i(uniforms.fastSampling,fastSampling?1:0);
     gl.uniform1f(uniforms.openingDepth,1/Math.max(2.5,5.85-eyeX));
     setLens(width,height,scale,power);
     gl.disable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);

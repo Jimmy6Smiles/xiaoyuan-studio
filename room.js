@@ -67,6 +67,7 @@ function initializeStudioRoom(){
   uniform vec3 eyePoint, sunDirection, shadowAxisU, shadowAxisV;
   uniform float shadowPixel, hasShadows;
   uniform bool whiteDarkroomLight;
+  uniform bool fastShadows;
   uniform float projectionReveal;
   uniform float projectionTime;
   uniform vec4 linkFrame;
@@ -124,14 +125,16 @@ function initializeStudioRoom(){
     float radius=blockers>0. ? emitterRadius*separation/(max(.4,depth-separation)*2.*lampSlope*depth) : 0.;
     radius=clamp(radius,texel*1.15,.025);
     float visible=0.;
+    float samples=fastShadows?4.:12.;
     for(int i=0;i<12;i++){
+      if(float(i)>=samples)break;
       float f=float(i)+.5,a=f*2.399963;
-      vec2 off=radius*sqrt(f/12.)*vec2(cos(a),sin(a));
+      vec2 off=radius*sqrt(f/samples)*vec2(cos(a),sin(a));
       // Compare against the receiver at the centre of the sampled texel.
       vec2 actual=(floor((uv+off)/texel)+.5)*texel-uv;
       visible+=step(depth+dot(gradient,actual)-.004,fixtureDepth(uv+off,tile));
     }
-    return visible/12.;
+    return visible/samples;
   }
   vec3 lampLight(vec3 p,vec3 n,vec3 origin,vec3 tint,float power){
     vec3 L=origin-p;
@@ -443,7 +446,8 @@ function initializeStudioRoom(){
     }
     float dark=smoothstep(2.92,3.04,-pos.z)*smoothstep(1.63,1.74,-pos.x)*(1.-smoothstep(3.08,3.18,pos.y));
     float diffuse=max(dot(n,sunDirection),0.);
-    float shadow=occlusion(n)*windowSun(pos)*(1.-dark);
+    float shadow=windowSun(pos)*(1.-dark);
+    if(shadow>0. && diffuse>0.)shadow*=occlusion(n);
     vec3 toWindow=vec3(5.84,2.40,clamp(pos.z,-2.1,4.0))-pos;
     float sky=(.26+.74*max(dot(n,normalize(toWindow)),0.))/(1.+.065*dot(toWindow,toWindow));
     float highSky=max(dot(n,normalize(vec3(clamp(pos.x,-5.6,5.6),3.65,-4.95)-pos)),0.)/(1.+.22*pow(pos.z+4.94,2.));
@@ -1709,6 +1713,7 @@ function initializeStudioRoom(){
   const wireUniform=gl.getUniformLocation(program,'stringBend[0]'),widthUniform=gl.getUniformLocation(program,'viewportWidth');
   const curtainUniform=gl.getUniformLocation(program,'curtainPhase');
   const darkroomLightUniform=gl.getUniformLocation(program,'whiteDarkroomLight');
+  const fastShadowsUniform=gl.getUniformLocation(program,'fastShadows');
   const projectionUniform=gl.getUniformLocation(program,'projectionReveal');
   const projectionTimeUniform=gl.getUniformLocation(program,'projectionTime');
   const linkFrameUniform=gl.getUniformLocation(program,'linkFrame');
@@ -1722,8 +1727,9 @@ function initializeStudioRoom(){
   const indoorPower=1/4.5;
   let focusPull=null,manualWeight=0,manualPower=indoorPower,meterTarget=indoorPower;
   let lastMeterTime=-Infinity,meterPose=null,focusLayers=null,ambientTimer=0;
-  let pixelBudget=2073600, sampleTime=0, sampleCount=0, lastActiveFrame=0;
-  let stillDetail=false;
+  const maxMotionPixels=2560*1440, maxStillPixels=3840*2160, settleDelay=500;
+  let motionPixels=1920*1080, sampleTime=0, sampleCount=0, lastMotionFrame=0, sharpenAt=0;
+  let panChanged=false;
   // One browser viewport of scrolling connects adjacent views within a workspace.
   // Gallery frames share an eye height and wall distance, so the wall passes parallel to the viewer.
   const firstLensStop=2;
@@ -2047,36 +2053,20 @@ function initializeStudioRoom(){
   }
   window.addEventListener('scroll',()=>{if(guitarClose)setGuitarClose(false);if(routes[index])requestRender();},{passive:true});
   window.addEventListener('resize',()=>{
+    requestRender();
     if(!routes[index])return;
     const position=window.scrollY/routeHeight;
     routeHeight=scrollUnit();
     document.body.style.height=routes[index].length*routeHeight+'px';
-    window.scrollTo(0,position*routeHeight);requestRender();
+    window.scrollTo(0,position*routeHeight);
   });
   function render(now){raf=0;
     clearTimeout(ambientTimer);
     if(document.hidden || !studioLoading.canDraw())return;
     const css=canvas.getBoundingClientRect();if(!css.width||!css.height)return;
-    // Only time consecutive animation frames. Intentional pauses between ambient
-    // updates, a background tab and time spent reading a print are not GPU load.
-    const interval=now-lastActiveFrame;
-    if(lastActiveFrame && interval>0 && interval<600){
-      sampleTime+=interval;sampleCount++;
-      if(sampleTime>=800 && sampleCount>=4){
-        const mean=sampleTime/sampleCount;
-        if(mean>28)pixelBudget=Math.max(360000,pixelBudget*Math.max(.48,21/mean));
-        else if(mean<17)pixelBudget=Math.min(2073600,pixelBudget*1.12);
-        sampleTime=0;sampleCount=0;
-      }
-    }else{sampleTime=0;sampleCount=0;}
-    lastActiveFrame=0;
-    const resting=stillDetail && !drag && !journey && !slide && !focusPull;
-    const budget=resting?4147200:pixelBudget;
-    const pixel=Math.min(devicePixelRatio||1,1.65,Math.sqrt(budget/(css.width*css.height)));
-    const w=Math.max(1,Math.round(css.width*pixel)),h=Math.max(1,Math.round(css.height*pixel));
-    if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}gl.viewport(0,0,w,h);
+    const aspect=css.width/css.height;
     let [dest,aim,angle]=stations[index];
-    if(index===0 && w<h)angle=70;
+    if(index===0 && aspect<1)angle=70;
     let moving=false;
     const route=routes[index];
     if(route){
@@ -2110,7 +2100,6 @@ function initializeStudioRoom(){
       aim=from[2].map((v,k)=>mix(v,to[2][k],u));
       angle=mix(from[3],to[3],u);
       if(index===aboutStation){
-        const aspect=w/h;
         angle=aboutAngle(aspect);
         if(guitarClose){
           dest=guitarEye(aspect);aim=guitarView[1];
@@ -2121,28 +2110,28 @@ function initializeStudioRoom(){
       }
       if(index===2 || index===3 || index===4){
         // Keep the full exhibit in view as the viewport narrows.
-        const stopAngle=k=>Math.max(route[k][3],2*Math.atan(route[k][4]*h/w)*180/Math.PI);
+        const stopAngle=k=>Math.max(route[k][3],2*Math.atan(route[k][4]/aspect)*180/Math.PI);
         angle=mix(stopAngle(lo),stopAngle(hi),u);
       }
       if(index===5){
         // Step back in portrait, keeping the summit below the upper crossbar.
-        const retreat=Math.min(1,Math.max(0,(1.25-w/h)/.8));
+        const retreat=Math.min(1,Math.max(0,(1.25-aspect)/.8));
         dest[0]-=1.05*retreat;
         dest[1]-=.11*retreat;
-        angle=Math.max(angle,windowFieldOfView(dest,aim,w/h));
+        angle=Math.max(angle,windowFieldOfView(dest,aim,aspect));
       }
       if(index===1){
         // Lift the camera around the corner of the table as it tilts up to the wall.
         if(lo===0){
           dest[1]+=.24*Math.sin(Math.PI*u);dest[0]+=.26*Math.sin(Math.PI*u);
-          const tableAngle=2*Math.atan(.45*h/w)*180/Math.PI;
+          const tableAngle=2*Math.atan(.45/aspect)*180/Math.PI;
           angle+=Math.max(0,tableAngle-from[3])*(1-u);
         }
-        const narrow=Math.max(0,.74*h/w-1);
+        const narrow=Math.max(0,.74/aspect-1);
         const printWeight=Math.min(1,progress);
         dest[0]+=narrow*printWeight;
         // Give the caption below the print its own space above the tour controls.
-        const labelOffset=(.09+.28*Math.max(0,Math.min(1,(1-w/h)*2)))*printWeight;
+        const labelOffset=(.09+.28*Math.max(0,Math.min(1,(1-aspect)*2)))*printWeight;
         dest[1]-=labelOffset;
         aim[1]-=labelOffset;
       }
@@ -2225,7 +2214,34 @@ function initializeStudioRoom(){
     // A tiny lateral eye movement gives nearby objects more motion than the far wall.
     const parallax=index===4?1-.8*Math.max(0,Math.min(1,progress-2)):1;
     const viewEye=add(eye,mult(add(mult(right,hoverX*.034),mult(up,hoverY*.018)),parallax));
-    const k=1/Math.tan(fov*Math.PI/360),sx=k*h/w,sy=k,z=1.002,t=-.08008,mat=[];for(let i=0;i<3;i++)mat.push(sx*right[i],sy*up[i],z*forward[i],forward[i]);mat.push(-dot(right,viewEye)*sx,-dot(up,viewEye)*sy,-dot(forward,viewEye)*z+t,-dot(forward,viewEye));
+    // Time camera travel only. Water, curtains and projection glitches continue
+    // at reading resolution once the visitor stops moving the camera.
+    const returningFromPan=!drag && !press && Math.abs(yaw)+Math.abs(pitch)>.003;
+    const cameraMoving=!!(journey || moving || focusPull || panChanged || returningFromPan);
+    panChanged=false;
+    const cssPixels=css.width*css.height;
+    const minMotionPixels=Math.min(1920*1080,cssPixels*.72*.72);
+    const interval=now-lastMotionFrame;
+    if(cameraMoving && lastMotionFrame && interval>0 && interval<400){
+      sampleTime+=interval;sampleCount++;
+      if(sampleTime>=800 && sampleCount>=4){
+        const mean=sampleTime/sampleCount;
+        if(mean>32)motionPixels=Math.max(minMotionPixels,motionPixels*Math.max(.65,28/mean));
+        else if(mean<22)motionPixels=Math.min(maxMotionPixels,motionPixels*1.15);
+        sampleTime=0;sampleCount=0;
+      }
+    }else{sampleTime=0;sampleCount=0;}
+    lastMotionFrame=cameraMoving?now:0;
+    if(cameraMoving)sharpenAt=now+settleDelay;
+    const inMotionQuality=now<sharpenAt;
+    const budget=inMotionQuality?Math.max(minMotionPixels,motionPixels):maxStillPixels;
+    const scale=Math.min(devicePixelRatio||1,Math.sqrt(budget/cssPixels),maxTextureSize/Math.max(css.width,css.height));
+    const w=Math.max(1,Math.round(css.width*scale)),h=Math.max(1,Math.round(css.height*scale));
+    const fastSampling=inMotionQuality && scale<1;
+    if(canvas.width!==w)canvas.width=w;
+    if(canvas.height!==h)canvas.height=h;
+    gl.viewport(0,0,w,h);
+    const k=1/Math.tan(fov*Math.PI/360),sx=k/aspect,sy=k,z=1.002,t=-.08008,mat=[];for(let i=0;i<3;i++)mat.push(sx*right[i],sy*up[i],z*forward[i],forward[i]);mat.push(-dot(right,viewEye)*sx,-dot(up,viewEye)*sy,-dot(forward,viewEye)*z+t,-dot(forward,viewEye));
     basis={right,up,forward,sx,sy,origin:viewEye};
     positionProjectTargets();
     positionWallLinks();
@@ -2274,7 +2290,7 @@ function initializeStudioRoom(){
       focusLayers.separateWaves===separateWaves &&
       (focusLayers.water || !portals.length || focusLayers.waterBlur===waterBlur) &&
       mat.every((v,i)=>v===focusLayers.matrix[i]);
-    const reuse=useLayer && reuseOutside && focusLayers.interior && focusLayers.linkLit===linkLit && !sway && !animateProjection;
+    const reuse=useLayer && reuseOutside && focusLayers.interior && focusLayers.fastSampling===fastSampling && focusLayers.linkLit===linkLit && !sway && !animateProjection;
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     if(reuseOutside)cancelWaves();
     const animateWater=reuseOutside?focusLayers.water:drawLake(mat,viewEye,texture,floorMap,portals,separateWaves,waterBlur);
@@ -2287,6 +2303,7 @@ function initializeStudioRoom(){
       gl.uniform1fv(sleeveUniform,sleeveLifts);
       gl.uniform1f(curtainUniform,sway?(now*.00076)%turn:0);
       gl.uniform1i(darkroomLightUniform,whiteDarkroomLight?1:0);
+      gl.uniform1i(fastShadowsUniform,fastSampling?1:0);
       gl.uniform3fv(eyeUniform,viewEye);gl.uniformMatrix4fv(uniform,false,mat);
       const inView=c=>studioVisibility.intersects(c,frustum) && (insideDarkroom?
         c[2]<-1.53 && c[4]<-2.71 && c[5]>-5.97 && c[7]>-5.05 && c[3]<3.26:
@@ -2308,19 +2325,18 @@ function initializeStudioRoom(){
         gl.bindTexture(gl.TEXTURE_2D,texture);
       }
       gl.depthMask(true);gl.disable(gl.BLEND);
-      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,separateWaves,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,linkLit};
+      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,separateWaves,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,linkLit,fastSampling};
     }
-    if(blurInterior)windowLens.finish(lensScale,opticalPower,viewEye[0],texture);
+    if(blurInterior)windowLens.finish(lensScale,opticalPower,viewEye[0],texture,fastSampling);
     if(animateWater)finishWater(basis,texture,!(sway || animateProjection || journey || moving || looking || lensMoving),waterBlur);
 
     shown=true;studioLoading.frame();
     if(journey || moving || looking || lensMoving || deskMoving || wiresMoving || sleevesMoving || trackingWindow){
-      stillDetail=false;lastActiveFrame=now;requestRender();
+      requestRender();
     }else if((sway || animateProjection) && !gl.isContextLost()){
-      stillDetail=false;ambientTimer=setTimeout(requestRender,1000/24);
-    }else if(!stillDetail && !drag && !animateWater && (index===1 || index===4 || index===aboutStation)){
-      // Redraw settled photographs at reading resolution once motion has stopped.
-      ambientTimer=setTimeout(()=>{stillDetail=true;requestRender();},180);
+      ambientTimer=setTimeout(requestRender,1000/24);
+    }else if(inMotionQuality){
+      ambientTimer=setTimeout(requestRender,Math.ceil(sharpenAt-now));
     }}
   function requestRender(){if(!raf)raf=requestAnimationFrame(render);}
   let displayedProject=selectedProject;
@@ -2409,6 +2425,7 @@ function initializeStudioRoom(){
       drag.panPending=false;canvas.setPointerCapture(e.pointerId);
     }
     drag.travel+=Math.hypot(dx,dy);drag.x=e.clientX;drag.y=e.clientY;
+    panChanged=panChanged || dx!==0 || dy!==0;
     if(drag.travel>=6)liftCard(-1);
     yaw-=dx*.004;pitch=Math.max(-.85,Math.min(.85,pitch+dy*.004));requestRender();
   });
