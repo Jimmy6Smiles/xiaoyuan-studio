@@ -1825,7 +1825,7 @@ function initializeStudioRoom(){
   }
   let progress=0,lastTourTime=0,summary='';
   let selectedStop=0,slide=null,routeHeight=window.innerHeight;
-  let drag=null,press=null,hoverX=0,hoverY=0,wantX=0,wantY=0;
+  let drag=null,press=null;
   const projectTargets=document.getElementById('projectTargets');
   let hoverCard=-1;
   function liftCard(i){
@@ -2032,25 +2032,16 @@ function initializeStudioRoom(){
     }
     if(kind==='station')document.dispatchEvent(new CustomEvent('studio-select',{detail:id}));
   }
-  function clearHover(){wantX=0;wantY=0;requestRender();}
   function releaseLook(){
     press=null;
     if(!drag)return;
     guitarPlayer.reset();
     yaw=Math.atan2(Math.sin(yaw),Math.cos(yaw));
-    drag=null;canvas.style.cursor='';clearHover();
+    drag=null;canvas.style.cursor='';requestRender();
   }
-  window.addEventListener('pointermove',e=>{
-    if(e.pointerType!=='mouse' || drag || press || e.buttons || reducedMotion.matches || guitarClose)return;
-    if(e.target.closest?.('button,a,input,select,textarea,[role="button"],#indexPanel,dialog') || (e.target===canvas && canvas.style.cursor==='pointer'))return;
-    wantX=Math.max(-1,Math.min(1,2*e.clientX/window.innerWidth-1));
-    wantY=Math.max(-1,Math.min(1,1-2*e.clientY/window.innerHeight));
-    requestRender();
-  });
-  document.documentElement.addEventListener('pointerleave',()=>{if(!press)clearHover()});
   window.addEventListener('blur',releaseLook);
   document.addEventListener('visibilitychange',requestRender);
-  reducedMotion.addEventListener('change',clearHover);
+  reducedMotion.addEventListener('change',requestRender);
   function scrollUnit(){return Math.max(1,window.innerHeight);}
   function setGuitarClose(close){
     if(close===guitarClose)return;
@@ -2192,17 +2183,13 @@ function initializeStudioRoom(){
     const sleevesMoving=advanceHoverLifts(sleeveLifts,sleeve,elapsed,reducedMotion.matches);
     if(deskMoving || wiresMoving)focusLayers=null;
     if(sleevesMoving && focusLayers)focusLayers.interior=false;
-    const follow=reducedMotion.matches?1:1-Math.exp(-elapsed*8);
-    hoverX=mix(hoverX,wantX,follow);hoverY=mix(hoverY,wantY,follow);
     if(!drag && !press){
       const decay=reducedMotion.matches?0:Math.exp(-elapsed*5.8);
       yaw*=decay;pitch*=decay;
       if(Math.abs(yaw)<.0001)yaw=0;
       if(Math.abs(pitch)<.0001)pitch=0;
     }
-    if(Math.abs(wantX-hoverX)<.001)hoverX=wantX;
-    if(Math.abs(wantY-hoverY)<.001)hoverY=wantY;
-    const looking=hoverX!==wantX || hoverY!==wantY || (!drag && !press && (yaw!==0 || pitch!==0));
+    const looking=!drag && !press && (yaw!==0 || pitch!==0);
     const endHeading=angles(unit(sub(aim,dest)));
     let fade=0;
     if(journey && !reducedMotion.matches){
@@ -2238,14 +2225,10 @@ function initializeStudioRoom(){
       if(t>=1)focusPull=null;
     }
     const a=heading[0]+yaw,e=Math.max(-1.3,Math.min(1.3,heading[1]+pitch)),forward=[Math.sin(a)*Math.cos(e),Math.sin(e),-Math.cos(a)*Math.cos(e)],right=unit(cross(forward,[0,1,0])),up=cross(right,forward);
-    // A tiny lateral eye movement gives nearby objects more motion than the far wall.
-    const parallax=index===4?1-.8*Math.max(0,Math.min(1,progress-2)):1;
-    const viewEye=add(eye,mult(add(mult(right,hoverX*.034),mult(up,hoverY*.018)),parallax));
     // Time camera travel only. Water, curtains and projection glitches continue
     // at reading resolution once the visitor stops moving the camera.
     const returningFromPan=!drag && !press && Math.abs(yaw)+Math.abs(pitch)>.003;
-    const hoverMoving=Math.abs(wantX-hoverX)+Math.abs(wantY-hoverY)>.003;
-    const cameraMoving=!!(journey || moving || focusPull || panChanged || returningFromPan || hoverMoving);
+    const cameraMoving=!!(journey || moving || focusPull || panChanged || returningFromPan);
     panChanged=false;
     const cssPixels=css.width*css.height;
     const minMotionPixels=Math.min(1920*1080,cssPixels*.72*.72);
@@ -2269,8 +2252,8 @@ function initializeStudioRoom(){
     if(canvas.width!==w)canvas.width=w;
     if(canvas.height!==h)canvas.height=h;
     gl.viewport(0,0,w,h);
-    const k=1/Math.tan(fov*Math.PI/360),sx=k/aspect,sy=k,z=1.002,t=-.08008,mat=[];for(let i=0;i<3;i++)mat.push(sx*right[i],sy*up[i],z*forward[i],forward[i]);mat.push(-dot(right,viewEye)*sx,-dot(up,viewEye)*sy,-dot(forward,viewEye)*z+t,-dot(forward,viewEye));
-    basis={right,up,forward,sx,sy,origin:viewEye};
+    const k=1/Math.tan(fov*Math.PI/360),sx=k/aspect,sy=k,z=1.002,t=-.08008,mat=[];for(let i=0;i<3;i++)mat.push(sx*right[i],sy*up[i],z*forward[i],forward[i]);mat.push(-dot(right,eye)*sx,-dot(up,eye)*sy,-dot(forward,eye)*z+t,-dot(forward,eye));
+    basis={right,up,forward,sx,sy,origin:eye};
     positionProjectTargets();
     positionWallLinks();
     const lens=index===2 && !journey?Math.round(progress)-firstLensStop:-1;
@@ -2282,10 +2265,10 @@ function initializeStudioRoom(){
     positionLensLink(reveal>.98 && !slide?lens:-1);
     const linkLit=!lensTargets.hidden && projectedLinks[lens].anchor.matches(':hover,:focus-visible');
     const metering=!!drag && drag.travel>=4;
-    const cameraPose=[...viewEye,...forward];
+    const cameraPose=[...eye,...forward];
     if(metering){
       if(!meterPose || (now-lastMeterTime>=70 && cameraPose.some((v,i)=>Math.abs(v-meterPose[i])>.00001))){
-        meterTarget=Math.min(6,measureCenter(viewEye,forward));
+        meterTarget=Math.min(6,measureCenter(eye,forward));
         if(!meterPose)manualPower=indoorPower*(1-windowFocus);
         meterPose=cameraPose;lastMeterTime=now;
       }
@@ -2321,8 +2304,8 @@ function initializeStudioRoom(){
     const reuse=useLayer && reuseOutside && focusLayers.interior && focusLayers.linkLit===linkLit && !sway && !animateProjection;
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     if(reuseOutside)cancelWaves();
-    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,viewEye,texture,floorMap,portals,separateWaves,waterBlur,fastSampling);
-    if(lensAvailable && portals.length)drawWindowGlass(mat,viewEye,portals,w,h,waterBlur,texture,!reuseOutside);
+    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,eye,texture,floorMap,portals,separateWaves,waterBlur,fastSampling);
+    if(lensAvailable && portals.length)drawWindowGlass(mat,eye,portals,w,h,waterBlur,texture,!reuseOutside);
     const blurInterior=useLayer && (reuse || windowLens.begin(w,h));
     if(!reuse){
       gl.bindTexture(gl.TEXTURE_2D,texture);
@@ -2332,14 +2315,14 @@ function initializeStudioRoom(){
       gl.uniform1f(curtainUniform,sway?(now*.00076)%turn:0);
       gl.uniform1i(darkroomLightUniform,whiteDarkroomLight?1:0);
       gl.uniform1i(fastShadowsUniform,fastSampling?1:0);
-      gl.uniform3fv(eyeUniform,viewEye);gl.uniformMatrix4fv(uniform,false,mat);
+      gl.uniform3fv(eyeUniform,eye);gl.uniformMatrix4fv(uniform,false,mat);
       const inView=c=>studioVisibility.intersects(c,frustum) && (insideDarkroom?
         c[2]<-1.53 && c[4]<-2.71 && c[5]>-5.97 && c[7]>-5.05 && c[3]<3.26:
         !(c[5]<-1.72 && c[7]<-3.01 && c[2]>-5.76 && c[4]>-4.80 && c[6]<3.07));
       drawOpaqueSurfaces(inView);
       drawPrintedSurfaces(frustum);
       gl.enable(gl.BLEND);gl.blendFuncSeparate(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA,gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
-      const viewDepth=g=>dot(sub(g.center,viewEye),forward);
+      const viewDepth=g=>dot(sub(g.center,eye),forward);
       transparentGroups.sort((a,b)=>viewDepth(b)-viewDepth(a));
       for(const g of transparentGroups)if(inView(g.bounds))drawRoom(g.first,g.count);
       if(reveal>0){
@@ -2355,7 +2338,7 @@ function initializeStudioRoom(){
       gl.depthMask(true);gl.disable(gl.BLEND);
       focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,separateWaves,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,linkLit,fastSampling};
     }
-    if(blurInterior)windowLens.finish(lensScale,opticalPower,viewEye[0],texture,fastSampling);
+    if(blurInterior)windowLens.finish(lensScale,opticalPower,eye[0],texture,fastSampling);
     if(animateWater)finishWater(basis,texture,!(sway || animateProjection || journey || moving || looking || lensMoving),waterBlur);
 
     shown=true;studioLoading.frame();
@@ -2413,7 +2396,6 @@ function initializeStudioRoom(){
     if(e.button!==0 || !e.isPrimary)return;
     const target=targetAtPointer(e);
     if(target){
-      wantX=hoverX;wantY=hoverY;
       press={target,id:e.pointerId,x:e.clientX,y:e.clientY,cancelled:false};
       if(target.kind==='strings' || target.kind==='guitar'){
         guitarSound.unlock();
@@ -2422,7 +2404,6 @@ function initializeStudioRoom(){
       canvas.setPointerCapture(e.pointerId);
       return;
     }
-    clearHover();
     drag={id:e.pointerId,x:e.clientX,y:e.clientY,travel:0,panPending:!!routes[index] && e.pointerType==='touch'};
     if(e.pointerType==='mouse')canvas.style.cursor='grabbing';
     if(!drag.panPending)canvas.setPointerCapture(e.pointerId);
