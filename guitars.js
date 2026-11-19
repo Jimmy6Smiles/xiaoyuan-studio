@@ -220,7 +220,7 @@ function buildGuitarCorner({vertices,face,tube,softBox,smoothQuad,rgb}){
     }
     bar([0,.01,-.22],[0,.19,-.055],.010,'494942');
     bar([0,.12,-.052],[0,.54,-.134],.010,'403f3b');
-    return {...spec,...axes,strings,id,head};
+    return {...spec,...axes,stand,strings,id,head};
   }
   const guitars=specs.map(instrument);
   // Compact combo with a recessed baffle, woven grille and a separate control fascia.
@@ -252,11 +252,16 @@ function buildGuitarCorner({vertices,face,tube,softBox,smoothQuad,rgb}){
     const p=amp.point(vertices.slice(k,k+3)),n=amp.vector(vertices.slice(k+3,k+6));
     for(let i=0;i<3;i++){vertices[k+i]=p[i];vertices[k+3+i]=n[i];}
   }
-  const jack=amp.point([-.189,.403,.146]),socket=guitars[1].point([.151,.116,.002]);
+  const {point:body,stand}=guitars[1];
+  const jack=amp.point([-.189,.403,.146]),socket=body([.158,.116,.002]);
+  const floorLead=(x,z)=>stand.point([x,.004,z]);
+  // Bring the slack around the front feet and lift it on the jack side.
+  // Floor points use the upright stand frame, the plug follows the tilted body.
   const cable=[jack,amp.point([-.189,.403,.181]),amp.point([-.190,.357,.195]),
-    [5.12,.058,6.06],[5.08,.009,6.02],[4.90,.006,5.93],[4.69,.006,5.88],[4.53,.006,5.91],
-    [4.48,.006,5.97],[4.52,.006,6.01],[4.64,.006,6.05],[4.67,.013,6.11],
-    guitars[1].point([.179,.061,.002]),guitars[1].point([.176,.107,.002]),socket];
+    [5.12,.058,6.06],[5.08,.009,6.02],[4.90,.004,5.93],floorLead(-.40,.35),
+    floorLead(-.24,.45),floorLead(-.08,.45),floorLead(-.025,.32),floorLead(.135,.25),
+    floorLead(.255,.215),floorLead(.275,.125),floorLead(.25,.042),stand.point([.224,.021,.014]),
+    body([.215,.034,.002]),body([.210,.095,.002]),body([.203,.116,.002]),body([.187,.116,.002]),socket];
   const midpoint=(p,q)=>p.map((v,k)=>(v+q[k])*.5);
   rod(cable[0],cable[1],.006,chrome,3);
   let prev=cable[1];

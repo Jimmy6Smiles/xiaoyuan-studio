@@ -7,7 +7,7 @@ async function initializeStudioRoom(){
   const separateRadiance=gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS)>8;
   const fineAtlas=gl.getParameter(gl.MAX_TEXTURE_SIZE)>=4096;
   const lightCoordinates=new Image();
-  if(fineAtlas)lightCoordinates.src='room-light-uv.png';
+  if(fineAtlas)lightCoordinates.src='room-light-uv.png?v=2';
   const coordinateReady=fineAtlas?lightCoordinates.decode().catch(()=>null):Promise.resolve();
   const vertex = `
   invariant gl_Position;
@@ -239,7 +239,10 @@ async function initializeStudioRoom(){
     return vec4((ink.rgb*ink.a+emission*light)/max(alpha,.0001),alpha);
   }
   float chartVisibility(vec2 uv, vec4 chart){
-    return texture2D(roomSurfaces,(chart.xy+.5+clamp(uv,0.,1.)*(chart.zw-1.))/1024.).r;
+    return texture2D(roomSurfaces,(chart.xy+.5+clamp(uv,0.,1.)*(chart.zw-1.))/vec2(2048.,1024.)).r;
+  }
+  vec4 surfaceMaterial(vec2 uv){
+    return texture2D(roomSurfaces,uv*vec2(.5,1.));
   }
   vec3 radianceSlice(vec2 xz,float tile){
     vec2 pixel=vec2(${fineAtlas||separateRadiance?'.5':'1024.5'},.5)+88.*vec2(mod(tile,11.),floor(tile/11.))+xz;
@@ -263,8 +266,17 @@ async function initializeStudioRoom(){
   }
   float roomVisibility(vec3 p,vec3 n){
     vec2 xz=(p.xz+vec2(5.9,5.))/vec2(11.8,12.);
-    if(mat>8.5 && mat<9.5 && n.y>.98)
-      return chartVisibility(xz,vec4(0.,0.,512.,512.));
+    if(mat>8.5 && mat<9.5 && n.y>.98){
+      float floorAO=chartVisibility(xz,vec4(0.,0.,512.,512.));
+      vec2 local=p.xz-vec2(3.90,5.65),span=vec2(1.55,1.10);
+      vec2 edge=min(local,span-local);
+      float inset=min(edge.x,edge.y);
+      if(inset<=0.)return floorAO;
+      vec2 size=vec2(1024.,768.);
+      vec2 pixel=vec2(1024.,0.)+clamp(local/span*size,vec2(.5),size-.5);
+      float contact=texture2D(roomSurfaces,pixel/vec2(2048.,1024.)).r;
+      return mix(floorAO,contact,smoothstep(0.,.045,inset));
+    }
     if(mat>1.5 && mat<2.5){
       if(n.y<-.98 && abs(p.y-4.10)<.008) return chartVisibility(xz,vec4(512.,0.,512.,512.));
       vec2 xy=vec2(xz.x,p.y/4.12),zy=vec2(xz.y,xy.y);
@@ -436,7 +448,7 @@ async function initializeStudioRoom(){
     vec2 surf=abs(n.y)>.60?pos.xz:(abs(n.x)>.60?pos.zy:pos.xy);
     float rough=.82;
     float visibility=roomVisibility(pos,n);
-    if(mat<.5)base*=.94+.12*texture2D(roomSurfaces,surf*4.8).b;
+    if(mat<.5)base*=.94+.12*surfaceMaterial(surf*4.8).b;
     if(mat>22.5 && mat<23.5){
       vec2 board=vec2(abs(tex.x),tex.y);
       float rings=board.x*2090.+3.3*noise(board*vec2(22.,2.))+.60*sin(9.*board.y);
@@ -470,8 +482,8 @@ async function initializeStudioRoom(){
     if(mat>.5 && mat<1.5){
       vec2 plank=abs(n.y)>.60?pos.xz:(abs(n.x)>.60?pos.zy:pos.xy);
       vec2 grainUV=plank*vec2(.56,1.18);
-      float grain=texture2D(roomSurfaces,grainUV).g;
-      float slope=grain-texture2D(roomSurfaces,grainUV+vec2(0.,.002)).g;
+      float grain=surfaceMaterial(grainUV).g;
+      float slope=grain-surfaceMaterial(grainUV+vec2(0.,.002)).g;
       base*=mix(vec3(.72,.65,.58),vec3(1.16,1.18,1.20),grain);
       rough=(n.y>.85?.43:.49)+.17*(.5-grain);
       vec3 across=abs(n.y)>.60?vec3(0.,0.,1.):vec3(0.,1.,0.);
@@ -495,7 +507,7 @@ async function initializeStudioRoom(){
         base*=1.-.17*exp(-gap*.28);
       }
     }else if((mat>1.5 && mat<2.5) || (mat>8.5 && mat<9.5)){
-      float mineral=texture2D(roomSurfaces,surf*.76).b;
+      float mineral=surfaceMaterial(surf*.76).b;
       base*=.91+.13*noise(surf*1.45)+.22*(mineral-.5);
       if(n.y>.85 && pos.y<.08) rough=.53+.16*mineral;
     }else if(mat>2.5 && mat<3.5){
@@ -527,7 +539,7 @@ async function initializeStudioRoom(){
     if(mat>4.5 && mat<6.5)base*=texture2D(atlas,tex).rgb;
     if(mat>8.5 && mat<9.5 && n.y>.85){
       vec2 jointUV=(pos.xz-vec2(-4.80,-4.77))/vec2(3.08,1.38);
-      base*=.30+.70*texture2D(roomSurfaces,jointUV).a;
+      base*=.30+.70*surfaceMaterial(jointUV).a;
       if(pos.x>3.7 && pos.z>5.05){
         vec2 d=pos.xz-vec2(5.18,6.40);
         vec2 local=vec2(dot(d,vec2(-.737,.675)),dot(d,vec2(-.675,-.737)));
@@ -2152,10 +2164,10 @@ async function initializeStudioRoom(){
   galleryImage.src='gallery-prints.jpg';
   tableImage.src='table-prints.jpg';
   darkroomImage.src='darkroom-prints.jpg';
-  surfaceSheet.src='room-surfaces.webp';
+  surfaceSheet.src='room-surfaces.webp?v=2';
   roomRadiance.src='room-irradiance.webp';
-  if(fineAtlas)surfaceRadiance.src='room-light-2cm.webp';
-  roomContacts.src='room-contacts.png';
+  if(fineAtlas)surfaceRadiance.src='room-light-2cm.webp?v=2';
+  roomContacts.src='room-contacts.png?v=2';
   benchProbe.src='workbench-radiance.jpg';
   cameraFinish.src='rangefinder-finish.jpg';
   suedePile.src='suede-pile.jpg';
