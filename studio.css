@@ -3,7 +3,8 @@
 #stage{height:100vh;height:100dvh;overflow:hidden;position:relative;isolation:isolate;min-height:360px}
 #room,.shade{position:absolute;inset:0;width:100%;height:100%}
 #room{cursor:grab}
-#room{opacity:0;z-index:-3;touch-action:none}.room-ready #room{opacity:1}.shade{pointer-events:none;z-index:-1;background:linear-gradient(180deg,rgba(15,15,12,.49),transparent 17%,transparent 46%,rgba(16,16,13,.32) 69%,rgba(13,14,12,.87))}
+#room{opacity:0;z-index:-3;touch-action:none}.room-ready #room{opacity:1}
+.shade{pointer-events:none;z-index:-1;background:radial-gradient(ellipse 33% 24% at 5% 88%,#1a171098,transparent),linear-gradient(180deg,#11120e55,transparent 15%,transparent 78%,#10120f99)}
 #studioLoader{position:fixed;inset:0;z-index:8;display:grid;place-items:center;background:#292620;color:#eee7da;transition:opacity .28s ease,visibility .28s}
 .studio-open #studioLoader{opacity:0;visibility:hidden;pointer-events:none}
 .loadMark{width:clamp(145px,19vw,210px);display:grid;gap:16px}
@@ -37,7 +38,6 @@ body.tour .more{margin-top:3px}
 #projectTargets{position:absolute;inset:0;pointer-events:none}
 .profileView .caption{bottom:clamp(74px,10vh,98px)}
 .profileView h1{font-size:clamp(28px,3vw,46px);margin:6px 0 0}
-.profileView .shade{background:linear-gradient(180deg,#15140f62,transparent 16%,transparent 64%,#141410bc)}
 #readExperience{margin-left:19px}
 #previousPortfolio:not([hidden]){display:inline-block;margin-left:16px;text-decoration:none}
 #notes:has(>.profilePortrait){display:grid;grid-template-columns:32% 1fr;gap:0 18px;align-items:start}
@@ -60,7 +60,6 @@ body.tour .more{margin-top:3px}
 .trackList small{margin-top:2px;color:#645447;font-size:13px}
 .room-ready #readExperience:not(:focus-visible){position:absolute;width:1px;height:1px;padding:0;margin:0;overflow:hidden;clip-path:inset(50%)}
 @media(max-width:600px){#stations{justify-content:flex-start;overflow-x:auto;scrollbar-width:none}#stations::-webkit-scrollbar{display:none}.stop{flex:none;padding-inline:5px}}
-.softwareDesk .shade{background:radial-gradient(ellipse 33% 24% at 5% 88%,#1a171098,transparent),linear-gradient(180deg,#11120e55,transparent 15%,transparent 78%,#10120f99)}
 #viewPlaylist,#guitarSound,#backToWall,#darkroomLight{margin-left:14px}
 html:not(.room-ready) #darkroomLight{display:none}
 .projectTarget{position:absolute;pointer-events:none;padding:0;border:0;background:transparent}

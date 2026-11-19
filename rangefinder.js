@@ -193,10 +193,11 @@ function buildRangefinderKit({vertices, face, smoothQuad, softBox, tube, rgb, un
   openTopPlate(topStart);
   // Open mount, recessed curtain, baffles, three discontinuous bayonet lands.
   const cx=11,cy=32.4;
-  wall('z',cx,cy,16.3,19.45,26.2,25.8,steel,3);
-  wall('z',cx,cy,19.45,19.72,25.8,25.45,'d5d6d1',3);
-  ring('z',cx,cy,19.72,25.45,22.15,steel,3);
-  wall('z',cx,cy,19.50,19.72,21.95,22.15,'939591',3,{inside:true});
+  const machinedSteel=1056;
+  wall('z',cx,cy,16.3,19.45,26.2,25.8,steel,machinedSteel);
+  wall('z',cx,cy,19.45,19.72,25.8,25.45,'d5d6d1',machinedSteel);
+  ring('z',cx,cy,19.72,25.45,22.15,steel,machinedSteel);
+  wall('z',cx,cy,19.50,19.72,21.95,22.15,'939591',machinedSteel,{inside:true});
   wall('z',cx,cy,19.45,5.4,22.0,20.2,'212221',enamel,{inside:true});
   ring('z',cx,cy,5.4,20.3,19.5,'1e2020');
   for(const a of [.14,2.25,4.40]){
@@ -384,7 +385,13 @@ function buildRangefinderKit({vertices, face, smoothQuad, softBox, tube, rgb, un
         quad([edgeA,edgeB,hoodPoint(b,top,inner),hoodPoint(a,top,inner)],n.map(v=>v*sign),color,enamel);
       }
     }
-    quad([hoodPoint(a,57.8,0),hoodPoint(b,57.8,0),hoodPoint(b,57.8,1),hoodPoint(a,57.8,1)],[0,1,0],'373837',enamel);
+    // A narrow rolled edge catches the sky even when the broad hood is dark.
+    const lower=t=>hoodPoint(t,top-.32,false);
+    const lip=t=>{const p=hoodPoint(t,top,false);return [p[0]*.990,p[1],p[2]*.990];};
+    const lipNormal=t=>unit([Math.sin(t),.87,Math.cos(t)]);
+    smoothQuad([lower(a),lower(b),lip(b),lip(a)],
+      [lipNormal(a),lipNormal(b),[0,1,0],[0,1,0]],rgb('55534e'),enamel);
+    quad([lip(a),lip(b),hoodPoint(b,top,1),hoodPoint(a,top,1)],[0,1,0],'484742',enamel);
   }
   ledge(41.05,25.75,20.25,'272827');
   ledge(41.18,20.45,16.15,'ffffff',engraving,{patch:[627,185,60]});

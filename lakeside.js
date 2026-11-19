@@ -88,8 +88,65 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     uniform vec2 tileOrigin;
     uniform float mirror,waterHeight,maskWater;
     uniform sampler2D terrainMap,fujiMap,sunMask,canopyMap;
+    uniform float cloudTime;
     uniform vec3 fujiUV;
     ${waterAndSky}
+    // The original mid-slope bank and its detached neighbours share the same
+    // wind and filament profile. Coordinates and terrain hits are in metres.
+    float cloudFootprint(vec2 point,vec2 center,vec2 radii){
+      vec2 q=(point-center)/radii;
+      return smoothstep(.01,.55,1.-dot(q,q));
+    }
+    vec4 mountainCloud(vec3 ray,float distance){
+      if(ray.x<.53)return vec4(0.);
+      vec2 slope=ray.yz/ray.x;
+      if(slope.x<.036 || slope.x>.235 || slope.y<-.74 || slope.y>1.5)return vec4(0.);
+      float first=max(0.,(9500.-eye.x)/ray.x);
+      float last=min(distance,(15800.-eye.x)/ray.x);
+      if(last<=first)return vec4(0.);
+
+      float dt=(last-first)/24.,tau=0.,lightSum=0.;
+      // Anchor the banks to the terrain. Wind shears their internal layers
+      // at different speeds and lets local pockets condense and disperse.
+      vec2 wind=vec2(170.*sin(cloudTime*.016),250.*sin(cloudTime*.021));
+      vec2 eddyPhase=vec2(.54*sin(cloudTime*.037),.43*sin(cloudTime*.025));
+      vec2 filamentPhase=vec2(.71*sin(cloudTime*.023),-.62*sin(cloudTime*.031));
+      // The central snowfield sits above the original bank throughout its drift.
+      float summitClearance=1.-(1.-smoothstep(.095,.175,abs(slope.y)))*smoothstep(.103,.125,slope.x);
+      for(int i=0;i<24;i++){
+        vec3 p=eye+ray*(first+(float(i)+.5)*dt);
+        vec2 q=p.xz;
+        float waist=cloudFootprint(q,vec2(12600.,-1100.),vec2(2940.,5600.))*summitClearance;
+        float shoulder=0.,aloft=0.;
+        if(slope.y>.19){
+          shoulder=cloudFootprint(q,vec2(13050.,5590.),vec2(1870.,1820.));
+          shoulder=max(shoulder,.71*cloudFootprint(q,vec2(13700.,10350.),vec2(1320.,1380.)));
+          aloft=cloudFootprint(q,vec2(14400.,8200.),vec2(1170.,2200.));
+          aloft=max(aloft,.75*cloudFootprint(q,vec2(13900.,13100.),vec2(1250.,1290.)));
+        }
+        if(max(waist,max(shoulder,aloft))<.002)continue;
+        float broad=noise((q-wind)*.00072);
+        float eddy=noise(vec2(q.y*.002+q.x*.00024,p.y*.0043+q.x*.00016)+eddyPhase);
+        float filaments=noise(vec2(q.y*.0041+q.x*.00042,p.y*.012-q.x*.00055)+filamentPhase);
+        float phase=q.y*.00066+q.x*.00017;
+        float moisture=.067*(sin(cloudTime*.047+phase)-sin(phase));
+        float textureDensity=smoothstep(.29,.70,.46*broad+.36*eddy+.18*filaments+moisture);
+        float lift=1080.+110.*sin(q.y*.00055)+130.*(eddy-.5)+95.*(broad-.5);
+        // Sample all three banks with the original waist cloud's soft profile.
+        // Change only their footprints, height and thickness across the slope.
+        vec3 heights=vec3(lift,lift+112.+117.*sin(q.y*.00087),
+                          lift+745.+180.*sin(q.y*.00063));
+        vec3 thickness=(121.+177.*broad)*vec3(1.,.88,1.08);
+        vec3 vertical=(vec3(p.y)-heights)/thickness;
+        vec3 layer=1.-smoothstep(vec3(.10),vec3(1.),abs(vertical));
+        vec3 depth=vec3(waist,shoulder,aloft)*layer*(textureDensity*dt*.00130);
+        tau+=dot(depth,vec3(1.));
+        lightSum+=dot(depth,vec3(.55+.13*filaments)+.30*vertical);
+      }
+      float alpha=1.-exp(-tau);
+      vec3 color=mix(vec3(.65,.64,.68),vec3(.96,.86,.74),clamp(lightSum/max(tau,.001),0.,1.));
+      return vec4(alpha*color,alpha);
+    }
     // Integrate only to the first solid hit. The same volumes are visible in
     // the reflected pass, including their occlusion by the actual mountain.
     vec4 mistAlong(vec3 ray,float distance){
@@ -116,33 +173,9 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
         }
       }
       float shoreAlpha=1.-exp(-tau);
-      float cloudTau=0.,lightSum=0.;
-      if(ray.x>.64 && ray.y>.040*ray.x && ray.y<.134*ray.x){
-        float first=max(0.,(9700.-eye.x)/ray.x);
-        float last=min(distance,(15100.-eye.x)/ray.x);
-        if(last>first){
-          float dt=(last-first)/20.;
-          for(int i=0;i<20;i++){
-            vec3 p=eye+ray*(first+(float(i)+.5)*dt);
-            vec2 q=p.xz-vec2(12600.,-1100.);
-            float footprint=1.-dot(q/vec2(2940.,5600.),q/vec2(2940.,5600.));
-            float broad=noise(p.xz*.00072);
-            float eddy=noise(vec2(p.z*.002+p.x*.00024,p.y*.0043+p.x*.00016));
-            float filaments=noise(vec2(p.z*.0041+p.x*.00042,p.y*.012-p.x*.00055));
-            float lift=1080.+110.*sin(p.z*.00055)+130.*(eddy-.5)+95.*(broad-.5);
-            float vertical=(p.y-lift)/(98.+153.*broad);
-            float density=smoothstep(.01,.55,footprint)*(1.-smoothstep(.10,1.,abs(vertical)))*
-              smoothstep(.29,.70,.46*broad+.36*eddy+.18*filaments);
-            float opticalDepth=density*dt*.00120;
-            cloudTau+=opticalDepth;
-            lightSum+=opticalDepth*(.55+.30*vertical+.13*filaments);
-          }
-        }
-      }
-      float cloudAlpha=1.-exp(-cloudTau);
-      vec3 cloudLight=mix(vec3(.65,.64,.68),vec3(.96,.86,.74),clamp(lightSum/max(cloudTau,.001),0.,1.));
-      return vec4(shoreAlpha*shoreLight+(1.-shoreAlpha)*cloudAlpha*cloudLight,
-                  shoreAlpha+(1.-shoreAlpha)*cloudAlpha);
+      vec4 cloud=mountainCloud(ray,distance);
+      return vec4(shoreAlpha*shoreLight+(1.-shoreAlpha)*cloud.rgb,
+                  shoreAlpha+(1.-shoreAlpha)*cloud.a);
     }
     void main(){
       vec3 ray=world-eye;
@@ -321,7 +354,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
   gl.useProgram(program);
   const loc=name=>gl.getUniformLocation(program,name);
   const mirrorUniform=loc('mirror'),reflectionUniform=loc('hasMirror'),sizeUniform=loc('resolution');
-  const maskUniform=loc('maskWater'),timeUniform=loc('waterTime'),waterBlurUniform=loc('waterBlur');
+  const maskUniform=loc('maskWater'),timeUniform=loc('waterTime'),waterBlurUniform=loc('waterBlur'),cloudUniform=loc('cloudTime');
   gl.uniform2fv(loc('tileOrigin'),light.origin);
   gl.uniform3fv(loc('fujiUV'),light.fujiUV);
   gl.uniform3fv(loc('sun'),light.sun);
@@ -410,7 +443,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
   function cancelWaves(){cancelAnimationFrame(waveFrame);waveFrame=0;}
   document.addEventListener('visibilitychange',()=>{cancelWaves();if(!document.hidden)requestRender();});
   gl.canvas.addEventListener('webglcontextlost',cancelWaves);
-  function drawLake(matrix,eye,roomAtlas,floorMap,portals,mayAnimate,waterBlur){
+  function drawLake(matrix,eye,roomAtlas,floorMap,rugMap,portals,mayAnimate,waterBlur,cloudTime){
     cancelWaves();
     if(!portals.length)return false;
     const frusta=portals.map(r=>studioVisibility.frustum(matrix,r,.68));
@@ -431,6 +464,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     gl.uniform1f(maskUniform,animateWater?1:0);
     gl.uniform1f(timeUniform,(performance.now()-clockStart)*.001);
     gl.uniform1f(waterBlurUniform,waterBlur);
+    gl.uniform1f(cloudUniform,cloudTime);
     const showMirror=usable && visibleWater.length>0;
     gl.enable(gl.SCISSOR_TEST);
     if(showMirror){
@@ -461,6 +495,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     gl.disable(gl.SCISSOR_TEST);
     gl.bindTexture(gl.TEXTURE_2D,roomAtlas);
     gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,roomShadow);
+    gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,rugMap);
     gl.activeTexture(gl.TEXTURE4);gl.bindTexture(gl.TEXTURE_2D,floorMap);gl.activeTexture(gl.TEXTURE0);
     if(state)vao.bindVertexArrayOES(null);
     else attributes.forEach(a=>gl.disableVertexAttribArray(a));

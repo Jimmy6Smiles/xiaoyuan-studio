@@ -60,7 +60,17 @@ function createWindowGlazing(gl,requestRender){
       float face=.0426+.9574*pow(1.-incidence,5.);
       float fresnel=2.*face/(1.+face);
       vec3 indoors=reflectedRoom(world,reflect(ray,front));
-      vec3 colour=field.rgb*(1.-fresnel)+indoors*fresnel;
+      // Mix reflected and transmitted radiance in linear light. The exterior
+      // buffer carries premultiplied coverage when the lake animates separately.
+      vec3 outdoor=clamp(field.rgb/max(field.a,.001),0.,1.);
+      vec3 reflected=pow(indoors,vec3(2.2));
+      vec3 transmitted=pow(outdoor,vec3(2.2));
+      // The indoor exposure opens the darker tones seen through the glass.
+      // Roll off into the bright sky and ease out as the eye approaches a pane.
+      float indoorExposure=smoothstep(.25,2.6,distance(eye,world));
+      transmitted+=.23*indoorExposure*transmitted*(1.-transmitted);
+      float coverage=field.a+(1.-field.a)*fresnel;
+      vec3 colour=coverage*pow((transmitted*field.a*(1.-fresnel)+reflected*fresnel)/max(coverage,.001),vec3(1./2.2));
       // A faint diffraction fringe only in the immediate neighbourhood of a
       // transmitted solar highlight. A dark ridge or mullion occludes it.
       if(dot(ray,sun)>.9985 && field.a>.95){

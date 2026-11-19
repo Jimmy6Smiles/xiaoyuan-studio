@@ -89,7 +89,7 @@ const studioVisibility=(()=>{
   }
   // Adjacent triangles often share position, normal, colour, UV and material.
   // Preserve exact attribute bits and the existing draw ranges, including seams.
-  function indexRoom(data){
+  function indexRoom(data,lightUVs){
     const stride=12,count=data.length/stride;
     const words=new Uint32Array(data.buffer,data.byteOffset,data.length);
     const table=new Uint32Array(2**Math.ceil(Math.log2(count*2)));
@@ -99,16 +99,18 @@ const studioVisibility=(()=>{
       const start=i*stride;
       let hash=2166136261;
       for(let k=0;k<stride;k++)hash=Math.imul(hash^words[start+k],16777619);
+        if(lightUVs)hash=Math.imul(hash^lightUVs[i],16777619);
       let slot=(hash^(hash>>>16))&mask;
       while(table[slot]){
         const offset=(table[slot]-1)*stride;
         let k=0;
         while(k<stride && words[offset+k]===words[start+k])k++;
-        if(k===stride)break;
+          if(k===stride && (!lightUVs || lightUVs[offset/stride]===lightUVs[i]))break;
         slot=(slot+1)&mask;
       }
       if(!table[slot]){
         words.copyWithin(used*stride,start,start+stride);
+        if(lightUVs)lightUVs[used]=lightUVs[i];
         table[slot]=++used;
       }
       indices[i]=table[slot]-1;

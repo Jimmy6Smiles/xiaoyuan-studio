@@ -1,34 +1,51 @@
 /* Warm Studio. Meshes use metres; +z faces the entry wall. */
-function initializeStudioRoom(){
+async function initializeStudioRoom(){
   const canvas = document.querySelector('#room');
   if (!canvas) return;
   const gl = canvas.getContext('webgl', {antialias:true,alpha:true,powerPreference:'high-performance'});
   if (!gl){studioLoading.unavailable();return;}
+  const separateRadiance=gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS)>8;
+  const fineAtlas=gl.getParameter(gl.MAX_TEXTURE_SIZE)>=4096;
+  const lightCoordinates=new Image();
+  if(fineAtlas)lightCoordinates.src='room-light-uv.png';
+  const coordinateReady=fineAtlas?lightCoordinates.decode().catch(()=>null):Promise.resolve();
   const vertex = `
+  invariant gl_Position;
   attribute vec3 p,n,c; attribute vec2 uv; attribute float m;
+  attribute vec2 bakedUV;
+  varying vec3 fineLightUV;
   uniform mat4 camera, shadowCamera;
   uniform highp float cardLift[6];
   uniform highp float sleeveLift[${recordPrints.length}];
   uniform highp float stringBend[12];
   uniform float viewportWidth, curtainPhase;
-  varying vec3 pos,norm,col; varying vec2 tex; varying float mat; varying vec3 lightUV;
+  varying vec3 pos,norm,col; varying vec2 tex; varying float mat,localContact; varying vec3 lightUV;
   void main(){
-    pos=p; norm=n; col=c; tex=uv; mat=mod(m,32.);
-    if(m>=${firstSleeveGroup*32}.){
-      int sleeve=int(floor(m/32.))-${firstSleeveGroup};
+    float code=floor(m+.5);
+    fineLightUV=vec3(bakedUV*(65535./16.),1.);
+    localContact=(m-code)*4.;
+    pos=p; norm=n; col=c; tex=uv; mat=mod(code,32.);
+    if(code>=1024.){
+      mat=code-1024.;
+    }else if(code>=${firstSleeveGroup*32}.){
+      int sleeve=int(floor(code/32.))-${firstSleeveGroup};
       float lift=sleeveLift[sleeve];
+      localContact*=1.-lift;
+      fineLightUV.z=1.-lift;
       // Lift the sleeve over the retaining lip while drawing it toward the room.
       pos.x-=${sleeveTravel.out}*lift;
       pos.y+=${sleeveTravel.up}*lift*(2.-lift);
-    }else if(m>=32.){
-      int i=int(floor(m/32.))-1;
+    }else if(code>=32.){
+      int i=int(floor(code/32.))-1;
       float lift=cardLift[i],angle=.085*lift,cx=cos(angle),sx=sin(angle);
+      localContact*=1.-lift;
+      fineLightUV.z=1.-lift;
       vec2 center=vec2(i<3?2.373:1.863,-4.732);
       mat2 tilt=mat2(cx,sx,-sx,cx);
       pos.yz=center+tilt*(p.yz-center)+vec2(.018,.096)*lift;
       norm.yz=tilt*n.yz;
     }
-    if(m==28.){
+    if(code==28.){
       // The heading stays on its rings. A travelling ripple reaches the hem last.
       float free=uv.y*uv.y, wave=curtainPhase+1.45*p.z-2.4*uv.y;
       pos.x+=free*(.015*sin(wave)+.004*sin(2.*wave+.8*uv.x));
@@ -37,9 +54,9 @@ function initializeStudioRoom(){
     }
     lightUV=(shadowCamera*vec4(pos,1.)).xyz*.5+.5;
     gl_Position=camera*vec4(pos,1.);
-    if(m<=-32.)mat=m;
-    else if(m<0.){
-      float bend=stringBend[int(-m-1.)]*sin(3.14159*uv.x);
+    if(code<=-32.)mat=code;
+    else if(code<0.){
+      float bend=stringBend[int(-code-1.)]*sin(3.14159*uv.x);
       vec4 axis=camera*vec4(n,0.);
       float pixels=abs(axis.x-gl_Position.x*axis.w/gl_Position.w)*viewportWidth/(2.*gl_Position.w);
       float radius=max(abs(uv.y),min(.003,.49/max(1.,pixels)));
@@ -57,16 +74,21 @@ function initializeStudioRoom(){
   const fragment = `precision highp float;
   const float kitMM=${rangefinderMM};
   const vec2 cameraFoot=vec2(${cameraFoot[0].toFixed(6)},${cameraFoot[2].toFixed(6)}),lensFoot=vec2(${lensFoot[0].toFixed(6)},${lensFoot[2].toFixed(6)});
-  varying vec3 pos,norm,col,lightUV; varying vec2 tex; varying float mat;
+  varying vec3 pos,norm,col,lightUV; varying vec2 tex; varying float mat,localContact;
+  varying vec3 fineLightUV;
   uniform vec4 printCenters;
   uniform vec3 overhead[2],profileLamps[2],profileAxes[2];
-  uniform sampler2D atlas, shadowDepth, runnerMap, metalFinish, floorJoints;
+  uniform sampler2D atlas, shadowDepth, runnerMap, metalFinish, roomSurfaces;
   uniform sampler2D cardInk, fromScreen, toScreen;
+  ${separateRadiance?'uniform sampler2D irradianceMap;':''}
+  uniform vec2 radianceTexel;
+  uniform bool hasRoomRadiance;
+  uniform bool hasFineLight;
   uniform float activeCard, priorCard, deskMix;
   uniform highp float cardLift[6];
   uniform vec3 eyePoint, sunDirection, shadowAxisU, shadowAxisV;
   uniform float shadowPixel, hasShadows;
-  uniform bool whiteDarkroomLight;
+  uniform float darkroomWhite;
   uniform bool fastShadows;
   uniform float projectionReveal;
   uniform float projectionTime;
@@ -216,6 +238,90 @@ function initializeStudioRoom(){
     float alpha=ink.a+light;
     return vec4((ink.rgb*ink.a+emission*light)/max(alpha,.0001),alpha);
   }
+  float chartVisibility(vec2 uv, vec4 chart){
+    return texture2D(roomSurfaces,(chart.xy+.5+clamp(uv,0.,1.)*(chart.zw-1.))/1024.).r;
+  }
+  vec3 radianceSlice(vec2 xz,float tile){
+    vec2 pixel=vec2(${fineAtlas||separateRadiance?'.5':'1024.5'},.5)+88.*vec2(mod(tile,11.),floor(tile/11.))+xz;
+    ${fineAtlas?'float strip=floor(pixel.y/704.);pixel=vec2(pixel.x+strip*968.,3392.+pixel.y-strip*704.);':''}
+    vec3 encoded=texture2D(${separateRadiance?'irradianceMap':'runnerMap'},pixel*radianceTexel${separateRadiance?'':',-14.'}).rgb;
+    return 4.*encoded*encoded;
+  }
+  vec3 roomIrradiance(vec3 p,vec3 n){
+    vec3 grid=clamp((p+.055*n-vec3(-5.8,.03,-4.88))/vec3(11.59,4.05,11.75),0.,1.)*vec3(87.,39.,87.);
+    float y=floor(grid.y);
+    vec3 result=vec3(0.);
+    for(int i=0;i<3;i++){
+      float component=n[i],face=2.*float(i)+(component<0.?1.:0.);
+      if(abs(component)>.001){
+        float tile=40.*face+y;
+        result+=component*component*mix(radianceSlice(grid.xz,tile),
+          radianceSlice(grid.xz,40.*face+min(39.,y+1.)),fract(grid.y));
+      }
+    }
+    return result;
+  }
+  float roomVisibility(vec3 p,vec3 n){
+    vec2 xz=(p.xz+vec2(5.9,5.))/vec2(11.8,12.);
+    if(mat>8.5 && mat<9.5 && n.y>.98)
+      return chartVisibility(xz,vec4(0.,0.,512.,512.));
+    if(mat>1.5 && mat<2.5){
+      if(n.y<-.98 && abs(p.y-4.10)<.008) return chartVisibility(xz,vec4(512.,0.,512.,512.));
+      vec2 xy=vec2(xz.x,p.y/4.12),zy=vec2(xz.y,xy.y);
+      if(n.z>.98 && abs(p.z+4.865)<.008) return chartVisibility(xy,vec4(0.,512.,512.,176.));
+      if(n.x<-.98 && abs(p.x-5.77)<.008) return chartVisibility(zy,vec4(512.,512.,512.,176.));
+      if(n.x>.98 && abs(p.x+5.78)<.008) return chartVisibility(zy,vec4(0.,688.,512.,176.));
+      if(n.z<-.98 && abs(p.z-6.86)<.008) return chartVisibility(xy,vec4(512.,688.,512.,176.));
+    }
+    if(mat>.5 && mat<1.5 && n.y>.95){
+      if(abs(p.y-.99)<.003 && abs(p.z-1.73)<.93)
+        return chartVisibility((p.xz-vec2(-.17,.805))/vec2(4.64,1.85),vec4(0.,864.,384.,152.));
+      if(abs(p.y-.82)<.003 && abs(p.z+3.92)<.58)
+        return chartVisibility((p.xz-vec2(.54,-4.495))/vec2(4.02,1.15),vec4(384.,864.,320.,112.));
+      if(abs(p.y-.355)<.003 && abs(p.z-1.73)<.83)
+        return chartVisibility((p.xz-vec2(-.075,.905))/vec2(4.45,1.65),vec4(704.,864.,320.,128.));
+    }
+    return 1.;
+  }
+  // Reflection of the large window in a satin surface. Project the reflected
+  // ray into the actual window opening; apparent edge width grows with roughness.
+  float reflectedWindow(vec3 r, float rough){
+    float travel=(5.77-pos.x)/max(.08,r.x);
+    vec2 hit=pos.yz+r.yz*travel;
+    float spread=.18+travel*(.15+.95*rough*rough);
+    vec2 edge=min(hit-vec2(1.10,-2.40),vec2(3.50,4.20)-hit);
+    vec2 visible=smoothstep(vec2(-spread),vec2(spread),edge);
+    float side=visible.x*visible.y*smoothstep(.05,.26,r.x);
+    // The clerestory behind the monitors also reflects across the front of the bench.
+    travel=(pos.z+4.94)/max(.08,-r.z);
+    hit=pos.xy+r.xy*travel;
+    spread=.12+travel*(.10+.78*rough*rough);
+    edge=min(hit-vec2(-5.8,3.22),vec2(5.8,4.09)-hit);
+    visible=smoothstep(vec2(-spread),vec2(spread),edge);
+    return side+.82*visible.x*visible.y*smoothstep(.06,.29,-r.z);
+  }
+  vec3 benchReflection(vec3 r,float rough){
+    vec2 oct=r.xy/(abs(r.x)+abs(r.y)+abs(r.z));
+    if(r.z<0.)oct=(1.-abs(oct.yx))*mix(vec2(-1.),vec2(1.),step(vec2(0.),oct));
+    vec2 uv=(vec2(.5,1536.5)+159.*(.5+.5*oct))/2048.;
+    vec3 sharp=texture2D(atlas,uv).rgb, satin=texture2D(atlas,uv+vec2(160./2048.,0.)).rgb;
+    return 4.*mix(sharp*sharp,satin*satin,rough);
+  }
+  // Apparent scatter from an opal diffuser, with an elliptical footprint
+  // at oblique angles. Only receivers behind the luminous face can carry it.
+  float diffuserGlow(vec3 origin,vec3 axis,float radius,vec3 sight,float depth){
+    vec3 delta=origin-eyePoint;
+    float reach=dot(delta,sight);
+    if(reach<.05 || depth<reach-.045)return 0.;
+    float facing=dot(-sight,axis);
+    if(facing<=.025)return 0.;
+    vec3 offset=reach*sight-delta;
+    float across=dot(offset,axis);
+    float width=max(.18,facing);
+    float distanceFromEdge=sqrt(max(0.,dot(offset,offset)+across*across/(width*width)))-radius;
+    float d=max(0.,distanceFromEdge)/(radius+.008*reach);
+    return smoothstep(.025,.40,facing)*(.16*exp(-3.3*d)+.062*exp(-.92*d*d));
+  }
   void main(){
     vec3 n=normalize(norm),base=col;
     if(mat<-31.5){
@@ -283,7 +389,7 @@ function initializeStudioRoom(){
       vec3 toLamp=vec3(-4.29,2.51,-3.86)-pos;
       float miss=length(cross(ray,toLamp));
       float lamp=(1.-smoothstep(.11,.23,miss))*step(0.,dot(ray,toLamp));
-      vec3 tint=whiteDarkroomLight?vec3(1.,.99,.97):vec3(1.,.27,.13);
+      vec3 tint=mix(vec3(1.,.27,.13),vec3(1.,.99,.97),darkroomWhite);
       float wetEdge=smoothstep(.04,.44,edge);
       float wallLight=.5+.5*dot(n.xz,normalize(toLamp.xz))/max(.001,edge);
       float reflectedLight=mix(mix(.24,.69,ceiling),mix(.12,.95,wallLight),wetEdge);
@@ -329,6 +435,8 @@ function initializeStudioRoom(){
     }
     vec2 surf=abs(n.y)>.60?pos.xz:(abs(n.x)>.60?pos.zy:pos.xy);
     float rough=.82;
+    float visibility=roomVisibility(pos,n);
+    if(mat<.5)base*=.94+.12*texture2D(roomSurfaces,surf*4.8).b;
     if(mat>22.5 && mat<23.5){
       vec2 board=vec2(abs(tex.x),tex.y);
       float rings=board.x*2090.+3.3*noise(board*vec2(22.,2.))+.60*sin(9.*board.y);
@@ -361,9 +469,13 @@ function initializeStudioRoom(){
     }
     if(mat>.5 && mat<1.5){
       vec2 plank=abs(n.y)>.60?pos.xz:(abs(n.x)>.60?pos.zy:pos.xy);
-      float grain=plank.y*49.+noise(plank*vec2(1.05,3.2))*3.6+.15*sin(plank.x*8.);
-      float latewood=smoothstep(.50,.95,sin(grain))*smoothstep(.32,.86,noise(plank*vec2(2.,13.)));
-      base*=.90+.14*noise(plank*vec2(1.2,20.))-.12*latewood;
+      vec2 grainUV=plank*vec2(.56,1.18);
+      float grain=texture2D(roomSurfaces,grainUV).g;
+      float slope=grain-texture2D(roomSurfaces,grainUV+vec2(0.,.002)).g;
+      base*=mix(vec3(.72,.65,.58),vec3(1.16,1.18,1.20),grain);
+      rough=(n.y>.85?.43:.49)+.17*(.5-grain);
+      vec3 across=abs(n.y)>.60?vec3(0.,0.,1.):vec3(0.,1.,0.);
+      n=normalize(n+.17*slope*across);
       if(n.z>.98 && abs(pos.z+4.7575)<.002 && pos.y>1.57 && pos.y<2.70){
         for(int i=0;i<6;i++){
           float lift=cardLift[i];
@@ -380,13 +492,12 @@ function initializeStudioRoom(){
         float bodyGap=length(vec2(max(abs(cameraBase.x)-52.,0.),cameraBase.y))-16.8;
         float lensGap=length(pos.xz-lensFoot)/kitMM-21.1;
         float gap=max(min(bodyGap,lensGap),0.);
-        base*=1.-.38*exp(-gap*.10)-.21*exp(-gap*.48);
+        base*=1.-.17*exp(-gap*.28);
       }
-      rough=.56;
     }else if((mat>1.5 && mat<2.5) || (mat>8.5 && mat<9.5)){
-      float mottled=noise(surf*2.9)*.13+noise(surf*10.)*.05+noise(surf*56.)*.035;
-      base*=.88+mottled;
-      if(n.y>.85 && pos.y<.08){rough=.43;base*=.96+.065*noise(surf*.8);}
+      float mineral=texture2D(roomSurfaces,surf*.76).b;
+      base*=.91+.13*noise(surf*1.45)+.22*(mineral-.5);
+      if(n.y>.85 && pos.y<.08) rough=.53+.16*mineral;
     }else if(mat>2.5 && mat<3.5){
       // Blend planar samples across rounded shells. Each tile spans 38 cm.
       vec3 weights=pow(abs(n),vec3(6.)); weights/=dot(weights,vec3(1.));
@@ -416,7 +527,7 @@ function initializeStudioRoom(){
     if(mat>4.5 && mat<6.5)base*=texture2D(atlas,tex).rgb;
     if(mat>8.5 && mat<9.5 && n.y>.85){
       vec2 jointUV=(pos.xz-vec2(-4.80,-4.77))/vec2(3.08,1.38);
-      base*=mix(vec3(1.),vec3(.79,.785,.76),texture2D(floorJoints,jointUV).r);
+      base*=.30+.70*texture2D(roomSurfaces,jointUV).a;
       if(pos.x>3.7 && pos.z>5.05){
         vec2 d=pos.xz-vec2(5.18,6.40);
         vec2 local=vec2(dot(d,vec2(-.737,.675)),dot(d,vec2(-.675,-.737)));
@@ -425,7 +536,7 @@ function initializeStudioRoom(){
         base*=1.-.32*exp(-cabinet*15.)-.15*exp(-stands*5.6);
       }
     }
-    if(mat>7.5 && mat<8.5)base=texture2D(runnerMap,tex).rgb;
+    if(mat>7.5 && mat<8.5)base=texture2D(runnerMap,${separateRadiance?'tex':fineAtlas?'vec2(.75+clamp(tex.x,.0006,.9994)*.25,tex.y)':'vec2(clamp(tex.x,.0006,.9994)*.5,tex.y)'}).rgb;
     if(mat>9.5 && mat<10.5){
       float u=tex.x,t=tex.y;
       float midrib=1.-smoothstep(.008,.052,abs(u)/(1.08-.72*t));
@@ -451,6 +562,13 @@ function initializeStudioRoom(){
                    +weight.z*texture2D(atlas,origin+fract(p.xy)*size).r;
         float detail=1.-smoothstep(1.5,3.7,length(eyePoint-pos));
         base*=mix(.92,.64+.98*grain,detail);rough=.64;
+        if(abs(n.z)>.7){
+          vec2 g=origin+fract(p.xy)*size;
+          vec2 texel=vec2(1./2048.,0.);
+          vec2 slope=vec2(texture2D(atlas,g+texel).r-texture2D(atlas,g-texel).r,
+                          texture2D(atlas,g+texel.yx).r-texture2D(atlas,g-texel.yx).r);
+          n=normalize(n-vec3(.42*detail*slope,0.));
+        }
       }
       if(mat>13.5)base*=texture2D(atlas,tex).rgb;
       if(mat<11.5)base*=.92+.17*texture2D(metalFinish,surf/.145).r;
@@ -464,8 +582,43 @@ function initializeStudioRoom(){
     float highSky=max(dot(n,normalize(vec3(clamp(pos.x,-5.6,5.6),3.65,-4.95)-pos)),0.)/(1.+.22*pow(pos.z+4.94,2.));
     float contact=.76+.24*smoothstep(0.,.58,pos.y);
     vec3 indirect=mix(vec3(.36,.30,.24),vec3(.42,.43,.44),.5+.5*n.y)*contact;
-    vec3 light=indirect+vec3(.62,.71,.85)*(sky+.34*highSky)+vec3(2.74,1.50,.74)*shadow*diffuse;
-    if(suede)light+=vec3(.55,.51,.46)*foldLight;
+    vec3 skyFill=vec3(.70,.81,.97)*(sky+.42*highSky);
+    vec3 ambient=indirect*mix(.12,1.,visibility*sqrt(visibility))+skyFill*visibility;
+    vec3 fineField=vec3(0.);
+    if(hasFineLight){
+      vec3 encoded=texture2D(${separateRadiance?'irradianceMap':'runnerMap'},fineLightUV.xy*radianceTexel${separateRadiance?'':',-14.'}).rgb;
+      fineField=4.*encoded*encoded;
+    }
+    if(hasRoomRadiance && dark<.999){
+      vec3 field=fineField;
+      if(!hasFineLight || fineLightUV.z<.999)
+        field=mix(roomIrradiance(pos,n),fineField,hasFineLight?fineLightUV.z:0.);
+      field=mix(field,vec3(dot(field,vec3(.24,.66,.10))),.14);
+      ambient=(vec3(.252,.246,.236)+1.52*sqrt(field*(field+.30)))*mix(.62,1.,visibility)*max(.44,1.-.70*localContact);
+      if(mat>1.5 && mat<2.5){
+        if(pos.y>4.04 && n.y<-.85)ambient*=.53+.14*smoothstep(2.,5.8,pos.x);
+        if(abs(n.y)<.3 && pos.y<2.8){
+          vec2 floorCell=clamp((pos.xz+.12*n.xz-vec2(-5.8,-4.88))/vec2(11.59,11.75),0.,1.)*87.;
+          ambient+=vec3(.46,.40,.34)*radianceSlice(floorCell,80.)*exp(-.90*pos.y)*visibility;
+        }
+      }
+      if(mat>8.5 && mat<9.5)ambient*=mix(.15,1.,smoothstep(.18,.91,visibility));
+    }
+    vec3 light=ambient+vec3(1.77,1.37,1.03)*shadow*diffuse;
+    // Daylight grazes the actual recess. It is strongest beside the glazing,
+    // rolls into the wall below the sill, and fades around the two jambs.
+    if(mat>1.5 && mat<2.5 && pos.x>5.48 && pos.x<5.97){
+      vec2 gap=max(max(vec2(1.10,-2.40)-pos.yz,pos.yz-vec2(3.50,4.20)),vec2(0.));
+      float reach=exp(-4.8*length(gap));
+      float reveal=max(abs(n.z)*(.77+.23*n.z),max(n.y,0.));
+      light+=reach*(vec3(.47,.42,.36)*(.60+.40*max(-n.x,0.))+vec3(.94,.94,.91)*reveal);
+    }
+    bool oakSill=mat>.5 && mat<1.5 && pos.x>5.50 && pos.x<5.98 && abs(pos.z-.9)<3.41 && abs(pos.y-1.068)<.05;
+    if(oakSill){
+      float top=smoothstep(.08,.91,n.y);
+      light+=top*vec3(.53,.57,.62)+vec3(.12,.11,.10);
+    }
+    if(suede)light+=vec3(.31,.30,.29)*foldLight;
     for(int i=0;i<2;i++){
       vec3 toLamp=overhead[i]-pos;
       float r2=max(dot(toLamp,toLamp),.001);
@@ -494,27 +647,108 @@ function initializeStudioRoom(){
       vec3 axis=profileAxes[i];
       vec3 ray=pos-profileLamps[i];
       float depth=dot(ray,axis),r2=dot(ray,ray);
-      float beam=smoothstep(.70,.95,depth*inversesqrt(max(.001,r2)));
+      float cosine=clamp(depth*inversesqrt(max(.001,r2)),0.,1.);
+      float beam=smoothstep(.70,.95,cosine);
+      // Keep the playlist head's flux when focusing it across the two rows.
+      float intensity=i==1?2.70*pow(cosine,18.):beam*beam;
       float facing=dot(n,-ray)*inversesqrt(max(.001,r2));
-      if(beam*facing>.002 && depth>.08 && depth<lampFar){
+      if((i==1?intensity:beam)*facing>.002 && depth>.08 && depth<lampFar){
         vec3 right=normalize(cross(vec3(0.,1.,0.),axis)),up=cross(axis,right);
         vec3 localRay=vec3(dot(ray,right),-depth,dot(ray,up));
         vec3 localNormal=vec3(dot(n,right),-dot(n,axis),dot(n,up));
         float visible=fixtureVisibility(localRay,localNormal,vec2(float(i),1.),.063);
-        light+=vec3(1.,.91,.79)*(2.9*beam*facing*visible/(.45+r2));
+        light+=vec3(1.,.88,.76)*(4.2*intensity*facing*visible/(.45+r2));
       }
     }
     vec3 pendant=vec3(-4.34,2.40,4.08);
     light+=spot(pos,n,pendant,vec3(0.,-1.,0.),vec3(1.,.85,.68),3.9,vec2(.12,.68))
           *belowDesk(pos,pendant,.75,vec2(-4.34,4.08),vec2(1.275,.395));
-    vec3 bulbTint=whiteDarkroomLight?vec3(1.,.99,.97):vec3(1.,.07,.012);
-    vec3 fill=whiteDarkroomLight?vec3(.40,.40,.39):vec3(.065,.012,.006);
-    vec3 bounce=whiteDarkroomLight?vec3(.64,.64,.63):vec3(.78,.065,.016);
+    vec3 bulbTint=mix(vec3(1.,.07,.012),vec3(1.,.99,.97),darkroomWhite);
+    vec3 fill=mix(vec3(.065,.012,.006),vec3(.40,.40,.39),darkroomWhite);
+    vec3 bounce=mix(vec3(.78,.065,.016),vec3(.64,.64,.63),darkroomWhite);
     vec3 darkroomLamp=lampLight(pos,n,vec3(-4.29,2.49,-3.86),bulbTint,6.0);
     vec3 safeOffset=pos-vec3(-4.29,2.2,-3.86);
-    light=mix(light,fill+bounce/(1.+.65*dot(safeOffset,safeOffset))+darkroomLamp,dark);
+    float safeVisibility=mix(.52,1.,visibility)*(1.-.65*localContact);
+    light=mix(light,safeVisibility*(fill+bounce/(1.+.65*dot(safeOffset,safeOffset)))+darkroomLamp,dark);
     vec3 result=pow(max(base,vec3(0.)),vec3(2.2))*light;
-    result=pow(result/(1.+.24*result),vec3(1./2.2));
+    if(mat>33.5 && mat<34.5){
+      vec3 r=reflect(-v,n);
+      float grazing=pow(1.-max(dot(n,v),0.),3.);
+      vec3 coating=benchReflection(r,.58);
+      float window=reflectedWindow(r,.29);
+      result+=coating*(.042+.39*grazing)+vec3(.88,.94,1.)*window*(.09+.48*grazing);
+      for(int i=0;i<2;i++){
+        vec3 lampDir=overhead[i]-pos;
+        float spot=pow(max(dot(r,normalize(lampDir)),0.),32.);
+        result+=vec3(1.,.90,.78)*spot*.80/(1.+.18*dot(lampDir,lampDir));
+      }
+    }
+    if(mat<.5 && dark<.5){
+      // Paper, painted housings and coated cases share a weak dielectric
+      // reflection. It varies with the opening's apparent size and angle.
+      float grazing=pow(1.-max(dot(n,v),0.),4.);
+      float pane=reflectedWindow(reflect(-v,n),.66);
+      result+=vec3(.84,.92,1.)*(.018+.095*grazing)*pane*(1.-.60*localContact);
+    }
+    if(mat>2.5 && mat<3.5 && pos.y>.95 && pos.y<1.69 && abs(pos.z-1.59)<1. && abs(pos.x-2.3)<2.25){
+      // The optical rail, gauge and caliper all see the same bright strip of
+      // glazing. The machined sides pick it up as the viewer moves past them.
+      vec3 r=reflect(-v,n);
+      vec3 reflected=benchReflection(r,.34)+vec3(.84,.94,1.08)*reflectedWindow(r,.22);
+      float polish=.31+.48*pow(1.-max(dot(n,v),0.),3.);
+      result=mix(result,reflected*(.16+.67*base),polish);
+    }
+    if(oakSill && n.y>.02){
+      // Grazing sky on varnish, interrupted by the feet of the window bars.
+      float opening=smoothstep(5.51,5.82,pos.x);
+      float gap=abs(mod(pos.z+2.40+.825,1.65)-.825);
+      float sky=smoothstep(.012,.085+.23*(1.-opening),gap);
+      float fres=.12+.42*pow(1.-max(dot(n,v),0.),3.);
+      result+=vec3(.98,1.03,1.09)*fres*sky*(.28+.72*opening)*smoothstep(.02,.8,n.y);
+    }
+    if((mat>10.5 && mat<14.5) || (mat>31.5 && mat<32.5)){
+      bool mount=mat>31.5;
+      float chrome=mount?1.:0.;
+      float pebbled=mat>11.5 && mat<12.5?1.:0.;
+      vec2 radial=(pos.xy-vec2(cameraFoot.x,${kitCenter[1]}))/kitMM-vec2(11.,32.4);
+      float ringRadius=length(radial);
+      if(mount && n.z>.88){
+        float lip=.45*smoothstep(24.6,25.7,ringRadius)-.72*(1.-smoothstep(21.9,22.8,ringRadius));
+        n=normalize(n+vec3((radial/max(ringRadius,.01))*(lip+.12),0.));
+      }
+      vec3 environment=benchReflection(reflect(-v,n),mix(mix(.43,.90,pebbled),.19,chrome));
+      float grazing=pow(1.-max(dot(n,v),0.),4.);
+      result+=environment*(mix(.077,.030,pebbled)+.23*grazing);
+      if(mount){
+        float machining=.97+.03*cos(ringRadius*12.);
+        result=(.029*light+environment*.87)*base*machining;
+      }
+    }
+    if(((mat>.5 && mat<1.5) || (mat>8.5 && mat<9.5)) && n.y>.85 && dark<.5){
+      vec3 r=reflect(-v,n);
+      float facing=1.-max(dot(n,v),0.);
+      float fresnel=(mat>8.5?.034:.039)+.38*pow(facing,5.);
+      vec3 reflected=vec3(1.01,1.17,1.30)*reflectedWindow(r,rough)*(mat>8.5?3.9:2.85);
+      for(int i=0;i<2;i++){
+        vec3 towards=overhead[i]-pos;
+        float distance2=dot(towards,towards);
+        float sheen=pow(max(dot(r,towards*inversesqrt(distance2)),0.),mix(75.,22.,rough));
+        reflected+=vec3(1.,.80,.56)*sheen*(13./(2.+distance2));
+      }
+      vec3 toBulb=benchLamp-pos;
+      float bulbDistance2=max(dot(toBulb,toBulb),.01);
+      vec3 bulbDirection=toBulb*inversesqrt(bulbDistance2);
+      float bulbCone=smoothstep(.36,.86,dot(-bulbDirection,lampAxis));
+      float bulbSheen=pow(max(0.,dot(r,bulbDirection)),mix(57.,18.,rough));
+      reflected+=warmWhite*bulbCone*bulbSheen*(6./(.4+bulbDistance2));
+      result+=fresnel*reflected*visibility*visibility;
+    }
+    if(n.y>.90 && (mat>8.5 && mat<9.5 || mat>.5 && mat<1.5 && abs(pos.y-.355)<.004)){
+      float shelter=1.-smoothstep(.28,.89,visibility);
+      result*=mix(vec3(1.),vec3(.55,.49,.45),shelter);
+    }
+    bool printed=(mat>15.5 && mat<21.5) || (mat>4.5 && mat<6.5) || mountedPrint;
+    result=pow(result/(1.+(printed?.47:.24)*result),vec3(1./2.2));
     vec3 halfVec=normalize(v+sunDirection);
     float metal=step(2.5,mat)*(1.-step(3.5,mat));
     float spec=pow(max(dot(n,halfVec),0.),mix(8.,74.,1.-rough));
@@ -537,7 +771,9 @@ function initializeStudioRoom(){
       float strip=pow(max(0.,dot(r,normalize(vec3(-.48,.62,-.53)))),9.);
       float fres=pow(1.-max(dot(n,v),0.),3.);
       vec3 env=mix(vec3(.09,.071,.049),vec3(.39,.42,.43),smoothstep(-.2,.82,r.y));
-      result=mix(result,base*(.4+1.37*env),.34)+vec3(.86,.87,.81)*(strip*.42+fres*.09);
+      float openLight=clamp(dot(ambient,vec3(.24,.66,.10))*1.4+.12,.15,1.);
+      float pane=reflectedWindow(r,rough);
+      result=mix(result,base*(.32+1.24*env)*sqrt(openLight),.26)+vec3(.86,.88,.89)*(strip*.26+fres*.09+pane*.19)*openLight;
       // Cool lens elements have a broad transmitted tint and tight grazing reflections.
       if(base.g>base.r*1.11 && base.b>base.r*1.09){
         float edge=pow(1.-abs(dot(n,v)),2.3);
@@ -570,14 +806,25 @@ function initializeStudioRoom(){
           float ghost=(radius-.75)/.085;
           element+=vec3(.091,.057,.105)*exp(-ghost*ghost);
         }
-        result=element+vec3(.56,.67,.62)*lightbar+vec3(.14,.18,.18)*rim;
+        vec3 coating=benchReflection(r,.10)*vec3(.26,.32,.30);
+        result=element+coating+vec3(.32,.39,.36)*lightbar+vec3(.14,.18,.18)*rim;
       }
     }
     if(mat>3.5 && mat<4.5)result=base*(.95+.04*clamp(n.y,0.,1.));
-    if(mat>30.5 && mat<31.5)result=whiteDarkroomLight?vec3(1.,.99,.96):vec3(1.,.29,.14);
+    if(mat>30.5 && mat<31.5)result=mix(vec3(1.,.29,.14),vec3(1.,.99,.96),darkroomWhite);
     if(mat>21.5 && mat<22.5){
       float milk=smoothstep(.0,.95,-n.y);
-      result=mix(vec3(.83,.77,.66),vec3(1.,.965,.872),milk);
+      result=mix(vec3(.85,.76,.63),vec3(1.,.981,.916),milk);
+      if(hasFineLight)result*=mix(vec3(1.),.84+.24*sqrt(clamp(fineField,0.,1.)),.78-.48*milk);
+    }
+    if(mat>32.5 && mat<33.5){
+      // Graphite powder coat. The room-facing cap stays dark; the sloping
+      // reveal and the polished arris pick up the strip of bright sky.
+      float depth=smoothstep(5.783,5.87,pos.x);
+      float side=max(abs(n.z)*.54,max(n.y,0.));
+      float sheen=side*(.20+.80*depth)*(.35+.65*reflectedWindow(reflect(-v,n),.42));
+      vec3 graphite=vec3(dot(base,vec3(.24,.66,.10)));
+      result=graphite*(.67+.24*max(-n.x,0.)+.15*depth)+vec3(.74,.77,.80)*sheen*.49;
     }
     if((mat>4.5 && mat<6.5) || mountedPrint)result=mix(result,base,.13*(1.-dark));
 
@@ -596,6 +843,13 @@ function initializeStudioRoom(){
     // A small optical halo and six aperture rays around the exposed safelight.
     vec3 toBulb=vec3(-4.29,2.49,-3.86)-eyePoint;
     vec3 sight=normalize(ray),bulbAxis=normalize(toBulb);
+    if(dark<.5){
+      float glow=diffuserGlow(overhead[0]+vec3(0.,.047,0.),vec3(0.,-1.,0.),.237,sight,length(ray))
+                +diffuserGlow(overhead[1]+vec3(0.,.047,0.),vec3(0.,-1.,0.),.237,sight,length(ray))
+                +diffuserGlow(vec3(-4.34,2.445,4.08),vec3(0.,-1.,0.),.175,sight,length(ray))
+                +diffuserGlow(benchLamp,lampAxis,.122,sight,length(ray));
+      result+=vec3(1.,.86,.65)*glow;
+    }
     if(eyePoint.x < -1.71 && eyePoint.z < -2.98 && eyePoint.y < 2.50 &&
        dot(sight,bulbAxis)>.96 && length(ray)+.19>length(toBulb)){
       vec3 right=normalize(cross(bulbAxis,vec3(0.,1.,0.)));
@@ -603,7 +857,7 @@ function initializeStudioRoom(){
       float radius=length(uv);
       float halo=.17*exp(-radius*15.);
       float rays=pow(abs(cos(3.*atan(uv.y,uv.x+.00001))),22.);
-      vec3 glow=whiteDarkroomLight?bulbTint:vec3(1.,.23,.055);
+      vec3 glow=mix(vec3(1.,.23,.055),vec3(1.,.99,.97),darkroomWhite);
       result+=glow*(halo+.055*rays*exp(-radius*14.));
     }
     if(mat>6.5 && mat<7.5){
@@ -621,7 +875,13 @@ function initializeStudioRoom(){
   for(const [type,src] of [[gl.VERTEX_SHADER,vertex],[gl.FRAGMENT_SHADER,fragment]]){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));gl.attachShader(program,s);}
   gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));
   gl.useProgram(program);
-  const vertices=[], items=[];
+  const vertices=[], items=[], emitters=[];
+  function luminous(power,build){
+    const first=vertices.length;
+    build();
+    for(let i=first;i<vertices.length;i+=12)
+      emitters.push(vertices[i],vertices[i+1],vertices[i+2],power);
+  }
   const sub=(a,b)=>a.map((v,i)=>v-b[i]), add=(a,b)=>a.map((v,i)=>v+b[i]), mult=(a,k)=>a.map(v=>v*k), dot=(a,b)=>a.reduce((v,x,i)=>v+x*b[i],0), cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]], unit=a=>mult(a,1/(Math.hypot(...a)||1));
   const rgb=h=>h.match(/../g).map(i=>parseInt(i,16)/255);
   function face(a,b,c,d,color,material=0,uvs=[[0,0],[1,0],[1,1],[0,1]]){const nm=unit(cross(sub(b,a),sub(c,a))), base=rgb(color);for(const i of [0,1,2,0,2,3])vertices.push(...[a,b,c,d][i],...nm,...base,...(material===5?[uvs[i][0]*.5,uvs[i][1]*.1875]:uvs[i]),material);}
@@ -706,9 +966,26 @@ function initializeStudioRoom(){
   box(5.86,3.50,1,.18,.62,12,wall,2);
   box(5.86,1.05,-3.7,.18,2.45,2.6,wall,2);
   box(5.86,1.05,5.6,.18,2.45,2.8,wall,2);
-  softBox(5.76,1.02,.90,.40,.09,6.78,oak,1,.025);
-  for(let j=0;j<=4;j++)box(5.85,1.10,-2.40+j*1.65,.13,2.40,.062,steel);
-  for(const y of [1.10,2.95,3.46])box(5.85,y,.90,.13,.047,6.60,steel);
+  softBox(5.73,1.02,.90,.43,.09,6.78,oak,1,.019);
+  for(let j=0;j<=4;j++){
+    const z=-2.40+j*1.65;
+    softBox(5.85,1.10,z,.13,2.40,.052,steel,1057,.009);
+    for(const side of [-1,1]){
+      const zi=z+side*.025,zo=z+side*.041;
+      face([5.792,1.10,zi],[5.843,1.10,zo],[5.843,3.50,zo],[5.792,3.50,zi],steel,1057);
+      box(5.861,1.10,zo,.032,2.40,.004,'373733');
+    }
+  }
+  for(const y of [1.10,2.95,3.46])
+    softBox(5.85,y,.90,.13,.047,6.60,steel,1057,.008);
+  // Narrow, light-facing return set between the dark frame and the plaster.
+  for(const [z,inside] of [[-2.40,1],[4.20,-1]]){
+    const inner=z+inside*.025,outer=z-inside*.12;
+    const a=[5.63,1.10,outer],b=[5.86,1.10,inner],c=[5.86,3.50,inner],d=[5.63,3.50,outer];
+    if(inside>0)face(a,b,c,d,'b3aea4',2);else face(d,c,b,a,'b3aea4',2);
+    softBox(5.68,1.08,outer,.11,2.46,.028,'837a6c',1,.006);
+  }
+  face([5.63,3.55,-2.52],[5.86,3.47,-2.38],[5.86,3.47,4.18],[5.63,3.55,4.32],'746d62',2);
   const windowEnd=vertices.length/12;
   // The casement pole stands clear of the projecting oak sill.
   const poleX=5.46,poleY=3.69,bronze='51433b',collar='69594d';
@@ -923,7 +1200,8 @@ function initializeStudioRoom(){
       ...atlas);
   }
   softBox(-2.78,.9,-4.04,.69,.05,.52,'413c36');softBox(-2.78,.95,-4.21,.035,1.09,.04,'b3aca0',3);softBox(-2.78,1.71,-4.05,.39,.4,.3,'363637');tube([-2.78,1.73,-4.05],[-2.78,1.54,-4.05],.10,.083,'232322');
-  tube([-4.29,3.04,-3.86],[-4.29,2.61,-3.86],.012,.012,steel);tube([-4.29,2.52,-3.86],[-4.29,2.68,-3.86],.21,.065,'663229');tube([-4.29,2.52,-3.86],[-4.29,2.51,-3.86],.175,.17,'ff4a23',31);
+  tube([-4.29,3.04,-3.86],[-4.29,2.61,-3.86],.012,.012,steel);tube([-4.29,2.52,-3.86],[-4.29,2.68,-3.86],.21,.065,'663229');
+  luminous(.80,()=>tube([-4.29,2.52,-3.86],[-4.29,2.51,-3.86],.175,.17,'ff4a23',31));
   tube([-5.3,2.17,-4.74],[-3.53,2.17,-4.74],.005,.005,'cab097');
   for(let i=0;i<6;i++){
     const x=-5.12+i*.26,top=2.162,bottom=top-.240,z=-4.735;
@@ -971,7 +1249,80 @@ function initializeStudioRoom(){
   }
 
   softBox(3.93,.99,1.34,.72,.42,.39,'ada898');box(3.84,1.09,1.543,.37,.23,.012,'293a33');for(let i=0;i<28;i++)box(3.67+i*.012,1.19+.055*Math.sin(i*.48),1.553,.013,.012,.01,'a3c483',4);for(let i=0;i<6;i++)tube([4.11+(i%2)*.066,1.1+Math.floor(i/2)*.075,1.55],[4.11+(i%2)*.066,1.1+Math.floor(i/2)*.075,1.575],.021,.021,'504e47',3);
-  function lamp(x,y,z){tube([x,y,z],[x,y+.055,z],.14,.14,steel);tube([x,y+.045,z],[x-.04,y+.73,z-.06],.022,.022,steel,3);tube([x-.04,y+.73,z-.06],[x+.35,y+.98,z-.1],.018,.018,steel,3);tube([x+.35,y+.98,z-.1],[x+.45,y+.79,z-.06],.06,.148,steel);tube([x+.45,y+.79,z-.06],[x+.454,y+.78,z-.06],.128,.128,'ffe1a0',4);}
+  function lamp(x,y,z){
+    const enamel=1058;
+    const top=[x+.35,y+.98,z-.10],rim=[x+.45,y+.79,z-.06];
+    const axis=unit(sub(rim,top)),at=offset=>add(rim,mult(axis,offset));
+    const pivot=[x-.04,y+.73,z-.06],foot=[x,y+.045,z];
+    const lower=unit(sub(foot,pivot)),upper=unit(sub(top,pivot));
+    const pin=unit(cross(lower,upper)),across=unit(cross(pin,upper));
+    const along=(direction,distance)=>add(pivot,mult(direction,distance));
+    tube([x,y,z],[x,y+.055,z],.14,.14,steel,enamel);
+    tube(foot,along(lower,.101),.022,.022,steel,enamel);
+    tube(along(lower,.106),along(lower,.077),.0225,.027,steel,enamel);
+    tube(along(upper,.069),top,.018,.018,steel,enamel);
+    // Two forged cheeks on the upright straddle the narrower moving eye.
+    // The rounded end of each lug is concentric with the transverse pivot.
+    function lug(direction,offset,half,radius,reach){
+      const side=unit(cross(pin,direction)),outline=[],segments=32;
+      for(let i=0;i<segments;i++){
+        const angle=turn*i/segments,c=Math.cos(angle),s=Math.sin(angle);
+        const tail=Math.max(0,c);
+        outline.push(add(along(direction,radius*c+(reach-radius)*tail*tail),
+          mult(side,radius*s*(1-.22*tail))));
+      }
+      const edge=outline.map((_,i)=>unit(cross(sub(outline[(i+1)%segments],
+        outline[(i+segments-1)%segments]),pin)));
+      const bevel=.0025,tint=rgb(steel);
+      const rings=[[-half,-bevel,-1],[-half+bevel,0,0],[half-bevel,0,0],[half,-bevel,1]]
+        .map(([z,inset,tilt])=>outline.map((p,i)=>({
+          p:add(add(p,mult(edge[i],inset)),mult(pin,offset+z)),
+          n:unit(add(edge[i],mult(pin,tilt)))
+        })));
+      for(let i=0;i<segments;i++){
+        const j=(i+1)%segments;
+        for(let k=1;k<rings.length;k++){
+          const q=[rings[k-1][i],rings[k-1][j],rings[k][j],rings[k][i]];
+          smoothQuad(q.map(v=>v.p),q.map(v=>v.n),tint,enamel);
+        }
+        for(const sign of [-1,1]){
+          const ring=sign===1?rings[3]:rings[0],n=mult(pin,sign);
+          for(const p of [along(pin,offset+sign*half),ring[sign===1?i:j].p,ring[sign===1?j:i].p])
+            vertices.push(...p,...n,...tint,0,0,enamel);
+        }
+      }
+    }
+    lug(lower,-.021,.0065,.038,.113);
+    lug(lower,.021,.0065,.038,.113);
+    lug(upper,0,.012,.031,.100);
+    for(const sign of [-1,1]){
+      const end=d=>along(pin,sign*d);
+      tube(end(.012),end(.0145),.029,.029,'786e5c',3);
+      tube(end(.0275),end(.030),.024,.024,'66635a',3);
+    }
+    tube(along(pin,-.030),along(pin,-.033),.019,.016,'74736d',3);
+    // The shoulder screw has a chamfered head and a recessed hex socket.
+    const radial=(angle,r)=>add(mult(upper,r*Math.cos(angle)),mult(across,r*Math.sin(angle)));
+    const screwRing=(i,z,r)=>add(along(pin,z),radial(turn*i/24,r));
+    function socket(i,z){
+      const a=Math.floor(i/4)*turn/6,t=(i%4)/4,r=.008;
+      return add(along(pin,z),add(mult(radial(a,r),1-t),mult(radial(a+turn/6,r),t)));
+    }
+    tube(along(pin,.030),along(pin,.032),.021,.021,'696962',3);
+    const socketFloor=rgb('343530');
+    for(let i=0;i<24;i++){
+      const j=i+1;
+      face(screwRing(i,.032,.021),screwRing(j,.032,.021),screwRing(j,.035,.0185),screwRing(i,.035,.0185),'85847c',3);
+      face(screwRing(i,.035,.0185),screwRing(j,.035,.0185),socket(j,.035),socket(i,.035),'77776f',3);
+      face(socket(i,.035),socket(j,.035),socket(j,.0321),socket(i,.0321),'373933',0);
+      if(i%4===0)for(const p of [along(pin,.0321),socket(i,.0321),socket(i+4,.0321)])
+        vertices.push(...p,...pin,...socketFloor,0,0,0);
+    }
+    tube(top,rim,.06,.148,steel,enamel,48);
+    tube(rim,at(.003),.148,.148,'64635e',enamel,48);
+    tube(at(.003),at(.006),.148,.143,'aba79d',3,48);
+    luminous(1,()=>tube(at(.006),at(.007),.138,.137,'fff4dc',4,48));
+  }
   lamp(.12,.99,1.43);
   // Digital desk, project pinboard and storage.
   table(2.55,-3.92,4.02,1.15,.82);softBox(4.1,.02,-3.92,.71,.71,.85,'676358');for(let i=0;i<4;i++)softBox(4.1,.08+i*.16,-3.476,.59,.12,.018,'827b6e');
@@ -1000,7 +1351,7 @@ function initializeStudioRoom(){
   // Monitor light bar clips over the top lip, with the diffuser forward of the glass.
   softBox(2.69,1.551,-4.189,.057,.021,.087,'444947',3,.006);
   tube([2.32,1.576,-4.125],[3.06,1.576,-4.125],.014,.014,'424744',3);
-  softBox(2.69,1.562,-4.123,.718,.004,.013,'fff0da',4,.002);
+  luminous(.66,()=>softBox(2.69,1.562,-4.123,.718,.004,.013,'fff0da',4,.002));
   // Low-profile keyboard with staggered rows and individually tapered keycaps.
   softBox(2.84,.821,-3.66,.91,.006,.39,'4c504b',0,.028,.002);
   const keyboardX=2.69,unitKey=.0285;
@@ -1197,9 +1548,9 @@ function initializeStudioRoom(){
     // Low storage keeps the optical bench heavy, with removable archive bins and pull handles.
     for(let j=0;j<3;j++){
       const x=.56+j*.8,z=1.87;
-      box(x,.358,z,.61,.29,.62,['716d5e','908771','756d61'][j]);
-      box(x,.629,z,.64,.046,.65,'a2947a');
-      box(x,.484,z+.314,.13,.046,.012,'514c42');
+      softBox(x,.358,z,.61,.29,.62,['716d5e','908771','756d61'][j],0,.009);
+      softBox(x,.629,z,.64,.046,.65,'a2947a',0,.008,.004);
+      softBox(x,.484,z+.314,.13,.046,.012,'514c42',3,.003);
       box(x,.492,z+.325,.085,.024,.006,'aa9c81');
     }
     // A power lead drops from the workstation, then follows the rear skirting.
@@ -1248,10 +1599,12 @@ function initializeStudioRoom(){
     band(.122,.160,.069,.035,'675e52',3);
     band(.094,.135,.287,.090,'635f55',3);
     band(.084,.098,.291,.288,'a68e70',3);
-    band(.009,.017,.040,.115,'f7efde',22);
-    band(.017,.034,.115,.191,'f7efde',22);
-    band(.034,.057,.191,.248,'f7efde',22);
-    band(.057,.084,.248,.281,'f7efde',22);
+    luminous(.92,()=>{
+      band(.009,.017,.040,.115,'f7efde',22);
+      band(.017,.034,.115,.191,'f7efde',22);
+      band(.034,.057,.191,.248,'f7efde',22);
+      band(.057,.084,.248,.281,'f7efde',22);
+    });
   }
   // Ceiling track, adjustable trunnions and recessed optics aimed at the four print centres.
   box(-4.48,4.036,.45,.075,.068,6.10,'544f47',3);
@@ -1264,14 +1617,16 @@ function initializeStudioRoom(){
     tube(point(-.072),point(.17),.077,.091,'494943',3,40);
     tube(point(.17),point(.183),.095,.095,'333531',3,40);
     tube(point(.183),point(.185),.077,.077,'c5b79f',3,40);
-    tube(point(.185),point(.187),.060,.059,'fff0d6',4,40);
+    luminous(1,()=>tube(point(.185),point(.187),.060,.059,'fff0d6',4,40));
     return point(.188);
   }
   for(const z of prints)trackHead(-4.48,z,unit([-1.08,-1.67,0]),false);
   const profileRailZ=5.10;
   box(panelX,4.036,profileRailZ,panelWidth*.68,.068,.075,'544f47',3);
   const lampPivots=[-.20,.20].map(offset=>[panelX+offset*panelWidth,3.885,profileRailZ]);
-  const wallAims=[[panelX,panelCenter,panelZ],[5.77,2.10,5.45]];
+  // At this grazing angle the brightest patch falls nearer the rail than the
+  // optical axis. Aim past the sleeve centre (y=2.36, z=5.78) to centre it.
+  const wallAims=[[panelX,panelCenter,panelZ],[5.72,1.734,6.061]];
   const profileAxes=lampPivots.map((p,i)=>unit(sub(wallAims[i],p)));
   const profileLamps=lampPivots.map(([x,,z],i)=>trackHead(x,z,profileAxes[i],true));
   // Broad opal pendant over the loose-print table.
@@ -1284,9 +1639,11 @@ function initializeStudioRoom(){
   pendantBand(2.64,2.70,.045,.034,'888174',3);
   pendantBand(2.59,2.645,.126,.042,'ded5c2',0);
   pendantBand(2.52,2.59,.190,.126,'ede4d0',0);
-  pendantBand(2.45,2.52,.202,.190,'f4e6cf',4);
-  pendantBand(2.405,2.45,.145,.202,'f8ead3',4);
-  pendantBand(2.393,2.405,.060,.145,'fff0da',4);
+  luminous(.87,()=>{
+    pendantBand(2.45,2.52,.202,.190,'f4e6cf',4);
+    pendantBand(2.405,2.45,.145,.202,'f8ead3',4);
+    pendantBand(2.393,2.405,.060,.145,'fff0da',4);
+  });
 
   // The top rolls into its bound sides. A folded band wraps each short end.
   {
@@ -1379,17 +1736,66 @@ function initializeStudioRoom(){
     if(roomIndices)gl.drawElements(gl.TRIANGLES,count,gl.UNSIGNED_INT,first*4);
     else gl.drawArrays(gl.TRIANGLES,first,count);
   }
-  let measureCenter;
+  let measureCenter,applyContactBake;
+  const fineBuffer=gl.createBuffer();
+  let surfaceRows=0;
+  await coordinateReady;
   const chunks=(()=>{
     const layout=studioVisibility.roomChunks(vertices,[windowStart,windowEnd,curtainStart,curtainEnd,photosStart,photosEnd,casterCount,solidCount]);
     measureCenter=studioVisibility.centerMeter(layout.packed,layout.chunks,solidCount);
+    const bits=new Uint32Array(layout.packed.buffer);
+    let signature=2166136261;
+    for(let k=0;k<solidCount*12;k+=12){
+      for(let axis=0;axis<3;axis++)signature=Math.imul(signature^bits[k+axis],16777619);
+    }
     gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
-    if(roomIndices){
-      const mesh=studioVisibility.indexRoom(layout.packed);
-      gl.bufferData(gl.ARRAY_BUFFER,mesh.vertices,gl.STATIC_DRAW);
+    let lightUVs;
+    const vertexCount=layout.packed.length/12;
+    if(lightCoordinates.naturalWidth && lightCoordinates.naturalHeight){
+      const sheet=surface(lightCoordinates.width,lightCoordinates.height);
+      sheet.drawImage(lightCoordinates,0,0);
+      const rgba=sheet.getImageData(0,0,sheet.canvas.width,sheet.canvas.height).data;
+      const byte=i=>rgba[i+Math.floor(i/3)];
+      const word=i=>(byte(i)|(byte(i+1)<<8)|(byte(i+2)<<16)|(byte(i+3)<<24))>>>0;
+      let meshHash=signature;
+      for(let k=solidCount*12;k<layout.packed.length;k+=12)
+        for(let j=0;j<3;j++)meshHash=Math.imul(meshHash^bits[k+j],16777619);
+      if(word(0)===vertexCount && word(4)===(meshHash>>>0) && word(8)>0 && word(8)<=3392 &&
+          vertexCount*4+12<=sheet.canvas.width*sheet.canvas.height*3){
+        lightUVs=new Uint32Array(vertexCount);
+        for(let i=0;i<vertexCount;i++)lightUVs[i]=word(12+i*4);
+        surfaceRows=word(8);
+      }
+    }
+    const mesh=roomIndices?studioVisibility.indexRoom(layout.packed,lightUVs):{vertices:layout.packed};
+    gl.bufferData(gl.ARRAY_BUFFER,mesh.vertices,gl.STATIC_DRAW);
+    if(mesh.indices){
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,roomIndices);
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,mesh.indices,gl.STATIC_DRAW);
-    }else gl.bufferData(gl.ARRAY_BUFFER,layout.packed,gl.STATIC_DRAW);
+    }
+    if(lightUVs){
+      gl.bindBuffer(gl.ARRAY_BUFFER,fineBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER,lightUVs.subarray(0,mesh.vertices.length/12),gl.STATIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+    }
+    applyContactBake=image=>{
+      if(!image.naturalWidth)return;
+      const sheet=surface(image.width,image.height);
+      sheet.drawImage(image,0,0);
+      const data=sheet.getImageData(0,0,image.width,image.height).data;
+      const byte=i=>data[i+Math.floor(i/3)];
+      const word=i=>(byte(i)|(byte(i+1)<<8)|(byte(i+2)<<16)|(byte(i+3)<<24))>>>0;
+      if(word(0)!==solidCount || word(4)!==(signature>>>0))return;
+      const count=mesh.vertices.length/12;
+      const blocked=new Uint8Array(count);
+      for(let i=0;i<solidCount;i++){
+        const target=mesh.indices?mesh.indices[i]:i;
+        blocked[target]=Math.max(blocked[target],byte(i+8));
+      }
+      for(let i=0;i<count;i++)mesh.vertices[i*12+11]+=blocked[i]/1020;
+      gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+      gl.bufferSubData(gl.ARRAY_BUFFER,0,mesh.vertices);
+    };
     vertices.length=0;return layout.chunks;
   })();
   const curtainChunks=chunks.filter(c=>c[0]>=curtainStart && c[0]<curtainEnd);
@@ -1483,16 +1889,24 @@ function initializeStudioRoom(){
   gl.uniform3fv(gl.getUniformLocation(program,'shadowAxisV'),mult(lightUp,8./9.));
   bakeRoomShadows();
   const {drawLake,finishWater,cancelWaves}=createLakeLandscape(gl,kawaguchiMesh,kawaguchiLight,requestRender);
-  const windowLens=createWindowFocus(gl);
+  const windowLens=createWindowFocus(gl,emitters);
+  emitters.length=0;
   const drawWindowGlass=createWindowGlazing(gl,requestRender);
   const maxTextureSize=gl.getParameter(gl.MAX_TEXTURE_SIZE);
   const roomLayout=[['p',3],['n',3],['c',3],['uv',2],['m',1]].map(([name,size])=>[gl.getAttribLocation(program,name),size]);
+  const fineAttribute=gl.getAttribLocation(program,'bakedUV');
   function bindRoom(){
     gl.useProgram(program);gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,roomIndices||null);
     let offset=0;
     for(const [i,size] of roomLayout){
       gl.enableVertexAttribArray(i);gl.vertexAttribPointer(i,size,gl.FLOAT,false,48,offset);offset+=size*4;
+    }
+    if(surfaceRows){
+      gl.bindBuffer(gl.ARRAY_BUFFER,fineBuffer);gl.enableVertexAttribArray(fineAttribute);
+      gl.vertexAttribPointer(fineAttribute,2,gl.UNSIGNED_SHORT,true,4,0);
+    }else{
+      gl.disableVertexAttribArray(fineAttribute);gl.vertexAttrib2f(fineAttribute,0,0);
     }
   }
   bindRoom();
@@ -1556,7 +1970,7 @@ function initializeStudioRoom(){
 
   // Independent power-of-two maps keep grazing-angle detail out of the UI atlas.
   const anisotropy=gl.getExtension('EXT_texture_filter_anisotropic');
-  function materialTexture(name,slot,image,repeat){
+  function materialTexture(name,slot,image,repeat,maxAnisotropy=8){
     gl.activeTexture(gl.TEXTURE0+slot);
     const map=gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D,map);
@@ -1567,7 +1981,7 @@ function initializeStudioRoom(){
     for(const edge of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])
       gl.texParameteri(gl.TEXTURE_2D,edge,repeat?gl.REPEAT:gl.CLAMP_TO_EDGE);
     if(anisotropy)gl.texParameterf(gl.TEXTURE_2D,anisotropy.TEXTURE_MAX_ANISOTROPY_EXT,
-      Math.min(8,gl.getParameter(anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+      Math.min(maxAnisotropy,gl.getParameter(anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
     gl.uniform1i(gl.getUniformLocation(program,name),slot);
     gl.activeTexture(gl.TEXTURE0);
     return map;
@@ -1630,38 +2044,72 @@ function initializeStudioRoom(){
     }
     return metal.canvas;
   }
-  // Flush joints share the slab's surface and cannot cast separate shadow silhouettes.
-  function makeFloorJoints(){
-    const tile=surface(2048,1024);
-    tile.fillStyle='black';tile.fillRect(0,0,2048,1024);
-    tile.scale(2048/3.08,1024/1.38);
-    tile.fillStyle='white';
-    for(let row=0;row<4;row++){
-      tile.fillRect(0,row*.46-.004,3.08,.008);
-      if(row<3){
-        const x=row*1.01;
-        tile.fillRect(x-.003,row*.46,.006,.46);
-        if(row===0)tile.fillRect(3.077,0,.003,.46);
-      }
-    }
-    return tile.canvas;
-  }
   let profileMap,suedeMap,recordMap,photoMap,tableMap,darkroomMap;
   const wallLinks=[],profileTargets=document.getElementById('profileTargets');
   const playlistTargets=document.getElementById('playlistTargets');
   const sleeveLifts=new Float32Array(recordShelves.targets.length);
   const sleeveUniform=gl.getUniformLocation(program,'sleeveLift[0]');
   let hoveredSleeve=-1;
-  const floorMap=materialTexture('floorJoints',4,makeFloorJoints(),true);
+  // R = static diffuse visibility, G = wood grain, B = mineral grain, A = grout.
+  const neutralSurface=surface(1,1);
+  neutralSurface.fillStyle='#ff8080';neutralSurface.fillRect(0,0,1,1);
+  let floorMap=materialTexture('roomSurfaces',4,neutralSurface.canvas,true);
   const lensMaps=[];
-  materialTexture('runnerMap',2,makeRunner(),false);
+  // Eight-sampler devices share this unit with the runner.
+  const rug=makeRunner();
+  let rugImage=rug;
+  if(!separateRadiance){
+    const packed=surface(fineAtlas?4096:2048,rug.height);
+    packed.drawImage(rug,fineAtlas?3072:0,0,1024,rug.height);
+    rugImage=packed.canvas;
+  }
+  const rugMap=materialTexture('runnerMap',2,rugImage,false,separateRadiance?8:1);
+  const radianceWidth=fineAtlas?(separateRadiance?3072:4096):(separateRadiance?968:2048);
+  gl.uniform2f(gl.getUniformLocation(program,'radianceTexel'),1/radianceWidth,1/(fineAtlas?4096:separateRadiance?1936:rug.height));
+  if(separateRadiance)gl.uniform1i(gl.getUniformLocation(program,'irradianceMap'),8);
+  rug.width=1;
+  if(rugImage!==rug)rugImage.width=1;
   materialTexture('metalFinish',3,makeMetalFinish(),true);
   const texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);function upload(){gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,atlas);}
   upload();gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   const source=new Image(), cameraFinish=new Image(), suedePile=new Image(),galleryImage=new Image(),tableImage=new Image();
-  const darkroomImage=new Image();
+  const darkroomImage=new Image(), surfaceSheet=new Image(),benchProbe=new Image();
+  const roomRadiance=new Image(),roomContacts=new Image(),surfaceRadiance=new Image();
   function imageReady(){
     gl.useProgram(program);
+    if(roomRadiance.naturalWidth===968 && roomRadiance.naturalHeight===1936){
+      if(separateRadiance){
+        gl.activeTexture(gl.TEXTURE0+8);gl.bindTexture(gl.TEXTURE_2D,gl.createTexture());
+        if(fineAtlas)gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,radianceWidth,4096,0,gl.RGB,gl.UNSIGNED_BYTE,null);
+        else gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,roomRadiance);
+        for(const filter of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,filter,gl.LINEAR);
+        for(const edge of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])gl.texParameteri(gl.TEXTURE_2D,edge,gl.CLAMP_TO_EDGE);
+      }else{
+        gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,rugMap);
+        if(!fineAtlas)gl.texSubImage2D(gl.TEXTURE_2D,0,1024,0,gl.RGBA,gl.UNSIGNED_BYTE,roomRadiance);
+      }
+      if(fineAtlas){
+        const format=separateRadiance?gl.RGB:gl.RGBA;
+        for(let y=0;y<1936;y+=704){
+          const h=Math.min(704,1936-y),strip=surface(968,h);
+          strip.drawImage(roomRadiance,0,y,968,h,0,0,968,h);
+          gl.texSubImage2D(gl.TEXTURE_2D,0,y/704*968,3392,format,gl.UNSIGNED_BYTE,strip.canvas);
+        }
+        if(surfaceRows && surfaceRadiance.naturalWidth===3072 && surfaceRadiance.naturalHeight===surfaceRows){
+          gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,format,gl.UNSIGNED_BYTE,surfaceRadiance);
+          gl.uniform1i(gl.getUniformLocation(program,'hasFineLight'),1);
+        }
+      }
+      if(!separateRadiance)gl.generateMipmap(gl.TEXTURE_2D);
+      gl.uniform1i(gl.getUniformLocation(program,'hasRoomRadiance'),1);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+    applyContactBake(roomContacts);
+    applyContactBake=null;
+    if(surfaceSheet.naturalWidth){
+      gl.deleteTexture(floorMap);
+      floorMap=materialTexture('roomSurfaces',4,surfaceSheet,true,2);
+    }
     profileMap=materialTexture('atlas',0,paintProfileWall(maxTextureSize,wallLinks),false);
     recordMap=materialTexture('atlas',0,paintPlaylist(),false);
     if(tableImage.naturalWidth)tableMap=materialTexture('atlas',0,tableImage,false);
@@ -1696,6 +2144,7 @@ function initializeStudioRoom(){
       sleeve.anchor=anchor;playlistTargets.append(anchor);
     }
     if(cameraFinish.naturalWidth)ctx.drawImage(cameraFinish,1024,0,1024,512);
+    if(benchProbe.naturalWidth)ctx.drawImage(benchProbe,0,1536);
     if(source.naturalWidth)ctx.drawImage(source,source.width*.47,source.height*.006,source.width*.47,source.height*.066,1024,1658,1024,325);
     gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,texture);upload();requestRender();
   }
@@ -1703,9 +2152,14 @@ function initializeStudioRoom(){
   galleryImage.src='gallery-prints.jpg';
   tableImage.src='table-prints.jpg';
   darkroomImage.src='darkroom-prints.jpg';
+  surfaceSheet.src='room-surfaces.webp';
+  roomRadiance.src='room-irradiance.webp';
+  if(fineAtlas)surfaceRadiance.src='room-light-2cm.webp';
+  roomContacts.src='room-contacts.png';
+  benchProbe.src='workbench-radiance.jpg';
   cameraFinish.src='rangefinder-finish.jpg';
   suedePile.src='suede-pile.jpg';
-  const roomImagesReady=Promise.allSettled([source.decode(),cameraFinish.decode(),suedePile.decode(),profilePortrait.decode(),playlistCovers.decode(),galleryImage.decode(),tableImage.decode(),darkroomImage.decode()]);
+  const roomImagesReady=Promise.allSettled([source.decode(),cameraFinish.decode(),suedePile.decode(),profilePortrait.decode(),playlistCovers.decode(),galleryImage.decode(),tableImage.decode(),darkroomImage.decode(),surfaceSheet.decode(),benchProbe.decode(),roomRadiance.decode(),roomContacts.decode(),fineAtlas && surfaceRadiance.decode()]);
   roomImagesReady.then(()=>{imageReady();studioLoading.done('prints');requestRender();});
   function drawOpaqueSurfaces(inView){
     studioVisibility.drawRanges(fixedChunks,inView,drawRoom);
@@ -1739,12 +2193,19 @@ function initializeStudioRoom(){
   const uniform=gl.getUniformLocation(program,'camera');gl.enable(gl.DEPTH_TEST);gl.clearColor(.81,.85,.85,1);
   const wireUniform=gl.getUniformLocation(program,'stringBend[0]'),widthUniform=gl.getUniformLocation(program,'viewportWidth');
   const curtainUniform=gl.getUniformLocation(program,'curtainPhase');
-  const darkroomLightUniform=gl.getUniformLocation(program,'whiteDarkroomLight');
+  const darkroomLightUniform=gl.getUniformLocation(program,'darkroomWhite');
   const fastShadowsUniform=gl.getUniformLocation(program,'fastShadows');
   const projectionUniform=gl.getUniformLocation(program,'projectionReveal');
   const projectionTimeUniform=gl.getUniformLocation(program,'projectionTime');
   const linkFrameUniform=gl.getUniformLocation(program,'linkFrame');
-  let whiteDarkroomLight=false;
+  let darkroomTarget=0,darkroomFrom=0,lightSwitchTime=0;
+  function darkroomLightAt(now){
+    if(darkroomFrom===darkroomTarget)return darkroomTarget;
+    const duration=(reducedMotion.matches?180:440)*Math.sqrt(Math.abs(darkroomTarget-darkroomFrom));
+    const t=Math.max(0,(now-lightSwitchTime)/duration);
+    if(t>=1)return darkroomTarget;
+    return mix(darkroomFrom,darkroomTarget,t*t*(3-2*t));
+  }
   const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)');
   const mix=(a,b,t)=>a+(b-a)*t;
   const ease=t=>t*t*t*(10+t*(-15+6*t));
@@ -2287,18 +2748,25 @@ function initializeStudioRoom(){
       curtainChunks.some(c=>studioVisibility.intersects(c,frustum));
     // A moving drape needs fresh indoor colour. A stationary view can still
     // reuse the exterior in the glass, including its reflected landscape.
-    const useLayer=lensScale>.15 && lensAvailable;
+    const reflections=!insideDarkroom && windowLens.supportsReflections;
+    const darkroomWhite=darkroomLightAt(now);
+    const useLayer=lensAvailable;
     // Composite the waves the same way while approaching the window and at rest.
     const separateWaves=lensAvailable && !reducedMotion.matches;
-    const reuseOutside=lensAvailable && focusLayers && focusLayers.w===w && focusLayers.h===h &&
+    // Include the downshore banks and their virtual image below the lake.
+    const movingClouds=!reducedMotion.matches && portals.some(rect=>
+      studioVisibility.intersects([0,0,9500,-2650,-6800,15800,2650,14500],studioVisibility.frustum(mat,rect)));
+    const cloudTime=movingClouds?Math.floor(now/160)*.16:0.;
+    const sameView=lensAvailable && focusLayers && focusLayers.w===w && focusLayers.h===h &&
       focusLayers.reduced===reducedMotion.matches && focusLayers.dark===insideDarkroom &&
       (focusLayers.water || !portals.length || focusLayers.waterBlur===waterBlur) &&
       mat.every((v,i)=>v===focusLayers.matrix[i]);
-    const reuse=useLayer && reuseOutside && focusLayers.interior && focusLayers.fastSampling===fastSampling &&
+    const reuseOutside=sameView && cloudTime===focusLayers.cloudTime;
+    const reuse=useLayer && sameView && focusLayers.interior && focusLayers.darkroomWhite===darkroomWhite && focusLayers.fastSampling===fastSampling &&
       focusLayers.linkLit===linkLit && !sway && !animateProjection;
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     if(reuseOutside)cancelWaves();
-    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,eye,texture,floorMap,portals,separateWaves,waterBlur);
+    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,eye,texture,floorMap,rugMap,portals,separateWaves,waterBlur,cloudTime);
     if(lensAvailable && portals.length)drawWindowGlass(mat,eye,portals,w,h,waterBlur,texture,!reuseOutside);
     const blurInterior=useLayer && (reuse || windowLens.begin(w,h));
     if(!reuse){
@@ -2307,7 +2775,7 @@ function initializeStudioRoom(){
       gl.uniform1fv(wireUniform,guitarPlayer.bend);gl.uniform1f(widthUniform,w);
       gl.uniform1fv(sleeveUniform,sleeveLifts);
       gl.uniform1f(curtainUniform,sway?(now*.00076)%turn:0);
-      gl.uniform1i(darkroomLightUniform,whiteDarkroomLight?1:0);
+      gl.uniform1f(darkroomLightUniform,darkroomWhite);
       gl.uniform1i(fastShadowsUniform,fastSampling?1:0);
       gl.uniform3fv(eyeUniform,eye);gl.uniformMatrix4fv(uniform,false,mat);
       const inView=c=>studioVisibility.intersects(c,frustum) && (insideDarkroom?
@@ -2330,26 +2798,30 @@ function initializeStudioRoom(){
         gl.bindTexture(gl.TEXTURE_2D,texture);
       }
       gl.depthMask(true);gl.disable(gl.BLEND);
-      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,linkLit,fastSampling};
+      if(blurInterior)windowLens.filterLighting(mat);
+      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,darkroomWhite,linkLit,fastSampling};
     }
+    focusLayers.cloudTime=cloudTime;
     // Keep the blurred window frame stable against the reflection as focus settles outdoors.
-    if(blurInterior)windowLens.finish(lensScale,opticalPower,eye[0],texture,fastSampling && windowFocus===0);
+    if(blurInterior)windowLens.finish(lensScale,opticalPower,basis,texture,fastSampling && windowFocus===0,reflections,insideDarkroom?darkroomWhite:-1);
     if(animateWater)finishWater(basis,texture,!(sway || animateProjection || journey || moving || looking || lensMoving),waterBlur);
 
     shown=true;studioLoading.frame();
-    if(journey || moving || looking || lensMoving || deskMoving || wiresMoving || sleevesMoving || trackingWindow){
+    if(journey || moving || looking || lensMoving || deskMoving || wiresMoving || sleevesMoving || trackingWindow || darkroomWhite!==darkroomTarget){
       requestRender();
     }else if((sway || animateProjection) && !gl.isContextLost()){
       ambientTimer=setTimeout(requestRender,1000/24);
-    }else if(fastSampling){
-      ambientTimer=setTimeout(requestRender,Math.ceil(restoreSamplingAt-now));
+    }else if(fastSampling || movingClouds){
+      ambientTimer=setTimeout(requestRender,Math.min(fastSampling?Math.ceil(restoreSamplingAt-now):Infinity,movingClouds?160:Infinity));
     }}
   function requestRender(){if(!raf)raf=requestAnimationFrame(render);}
   let displayedProject=selectedProject;
   window.studioRoom={toggleGuitarSound(){guitarSound.toggle();},returnToWall(){setGuitarClose(false);},
     toggleDarkroomLight(){
-      whiteDarkroomLight=!whiteDarkroomLight;
-      document.getElementById('darkroomLight').textContent=whiteDarkroomLight?'Use red light':'Use white light';
+      const now=performance.now();
+      darkroomFrom=darkroomLightAt(now);lightSwitchTime=now;
+      darkroomTarget=1-darkroomTarget;
+      document.getElementById('darkroomLight').textContent=darkroomTarget?'Use red light':'Use white light';
       focusLayers=null;requestRender();
     },
     atPlaylist(){return index===aboutStation && Math.round(progress)===2;},
@@ -2458,5 +2930,5 @@ function initializeStudioRoom(){
 }
 // Give the lightweight loading screen a paint before building the room meshes.
 requestAnimationFrame(()=>requestAnimationFrame(()=>{
-  try{initializeStudioRoom();}catch(error){console.error(error);studioLoading.unavailable();}
+  initializeStudioRoom().catch(error=>{console.error(error);studioLoading.unavailable();});
 }));
