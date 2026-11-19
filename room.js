@@ -1754,8 +1754,10 @@ function initializeStudioRoom(){
   const indoorPower=1/4.5;
   let focusPull=null,manualWeight=0,manualPower=indoorPower,meterTarget=indoorPower;
   let lastMeterTime=-Infinity,meterPose=null,focusLayers=null,ambientTimer=0;
-  const maxMotionPixels=2560*1440, maxStillPixels=3840*2160, settleDelay=500;
-  let motionPixels=1920*1080, sampleTime=0, sampleCount=0, lastMotionFrame=0, sharpenAt=0;
+  const maxRenderEdge=Math.min(maxTextureSize,gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
+  const [maxViewportWidth,maxViewportHeight]=gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+  const samplingSettleDelay=500;
+  let restoreSamplingAt=0;
   let panChanged=false;
   // One browser viewport of scrolling connects adjacent views within a workspace.
   // Gallery frames share an eye height and wall distance, so the wall passes parallel to the viewer.
@@ -2070,6 +2072,14 @@ function initializeStudioRoom(){
     document.getElementById('hint').textContent=route?'Scroll to explore · ← → change room':'Drag to look · Use ← → to explore';
   }
   window.addEventListener('scroll',()=>{if(guitarClose)setGuitarClose(false);if(routes[index])requestRender();},{passive:true});
+  // A display or zoom change can alter the pixel density without resizing the window.
+  if(window.ResizeObserver && 'devicePixelContentBoxSize' in ResizeObserverEntry.prototype)
+    new ResizeObserver(requestRender).observe(canvas,{box:'device-pixel-content-box'});
+  function watchPixelRatio(){
+    const current=matchMedia('(resolution: '+window.devicePixelRatio+'dppx)');
+    current.addEventListener('change',()=>{watchPixelRatio();requestRender();},{once:true});
+  }
+  watchPixelRatio();
   window.addEventListener('resize',()=>{
     requestRender();
     if(!routes[index])return;
@@ -2225,30 +2235,15 @@ function initializeStudioRoom(){
       if(t>=1)focusPull=null;
     }
     const a=heading[0]+yaw,e=Math.max(-1.3,Math.min(1.3,heading[1]+pitch)),forward=[Math.sin(a)*Math.cos(e),Math.sin(e),-Math.cos(a)*Math.cos(e)],right=unit(cross(forward,[0,1,0])),up=cross(right,forward);
-    // Time camera travel only. Water, curtains and projection glitches continue
-    // at reading resolution once the visitor stops moving the camera.
+    // Use cheaper shader sampling during camera travel at the same canvas size.
     const returningFromPan=!drag && !press && Math.abs(yaw)+Math.abs(pitch)>.003;
     const cameraMoving=!!(journey || moving || focusPull || panChanged || returningFromPan);
     panChanged=false;
-    const cssPixels=css.width*css.height;
-    const minMotionPixels=Math.min(1920*1080,cssPixels*.72*.72);
-    const interval=now-lastMotionFrame;
-    if(cameraMoving && lastMotionFrame && interval>0 && interval<400){
-      sampleTime+=interval;sampleCount++;
-      if(sampleTime>=800 && sampleCount>=4){
-        const mean=sampleTime/sampleCount;
-        if(mean>32)motionPixels=Math.max(minMotionPixels,motionPixels*Math.max(.65,28/mean));
-        else if(mean<22)motionPixels=Math.min(maxMotionPixels,motionPixels*1.15);
-        sampleTime=0;sampleCount=0;
-      }
-    }else{sampleTime=0;sampleCount=0;}
-    lastMotionFrame=cameraMoving?now:0;
-    if(cameraMoving)sharpenAt=now+settleDelay;
-    const inMotionQuality=now<sharpenAt;
-    const budget=inMotionQuality?Math.max(minMotionPixels,motionPixels):maxStillPixels;
-    const scale=Math.min(devicePixelRatio||1,Math.sqrt(budget/cssPixels),maxTextureSize/Math.max(css.width,css.height));
+    if(cameraMoving)restoreSamplingAt=now+samplingSettleDelay;
+    const fastSampling=now<restoreSamplingAt;
+    const scale=Math.min(window.devicePixelRatio||1,maxRenderEdge/Math.max(css.width,css.height),
+      maxViewportWidth/css.width,maxViewportHeight/css.height);
     const w=Math.max(1,Math.round(css.width*scale)),h=Math.max(1,Math.round(css.height*scale));
-    const fastSampling=inMotionQuality;
     if(canvas.width!==w)canvas.width=w;
     if(canvas.height!==h)canvas.height=h;
     gl.viewport(0,0,w,h);
@@ -2346,8 +2341,8 @@ function initializeStudioRoom(){
       requestRender();
     }else if((sway || animateProjection) && !gl.isContextLost()){
       ambientTimer=setTimeout(requestRender,1000/24);
-    }else if(inMotionQuality){
-      ambientTimer=setTimeout(requestRender,Math.ceil(sharpenAt-now));
+    }else if(fastSampling){
+      ambientTimer=setTimeout(requestRender,Math.ceil(restoreSamplingAt-now));
     }}
   function requestRender(){if(!raf)raf=requestAnimationFrame(render);}
   let displayedProject=selectedProject;
