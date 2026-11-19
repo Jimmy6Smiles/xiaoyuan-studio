@@ -2288,18 +2288,17 @@ function initializeStudioRoom(){
     // A moving drape needs fresh indoor colour. A stationary view can still
     // reuse the exterior in the glass, including its reflected landscape.
     const useLayer=lensScale>.15 && lensAvailable;
-    // A moving view already redraws the lake. Shade its waves in that pass;
-    // reserve the full-frame water copy for animating a stationary view.
-    const separateWaves=lensAvailable && !reducedMotion.matches && !(journey || moving || looking || metering);
+    // Composite the waves the same way while approaching the window and at rest.
+    const separateWaves=lensAvailable && !reducedMotion.matches;
     const reuseOutside=lensAvailable && focusLayers && focusLayers.w===w && focusLayers.h===h &&
       focusLayers.reduced===reducedMotion.matches && focusLayers.dark===insideDarkroom &&
-      focusLayers.separateWaves===separateWaves && focusLayers.fastSampling===fastSampling &&
       (focusLayers.water || !portals.length || focusLayers.waterBlur===waterBlur) &&
       mat.every((v,i)=>v===focusLayers.matrix[i]);
-    const reuse=useLayer && reuseOutside && focusLayers.interior && focusLayers.linkLit===linkLit && !sway && !animateProjection;
+    const reuse=useLayer && reuseOutside && focusLayers.interior && focusLayers.fastSampling===fastSampling &&
+      focusLayers.linkLit===linkLit && !sway && !animateProjection;
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     if(reuseOutside)cancelWaves();
-    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,eye,texture,floorMap,portals,separateWaves,waterBlur,fastSampling);
+    const animateWater=reuseOutside?focusLayers.water:drawLake(mat,eye,texture,floorMap,portals,separateWaves,waterBlur);
     if(lensAvailable && portals.length)drawWindowGlass(mat,eye,portals,w,h,waterBlur,texture,!reuseOutside);
     const blurInterior=useLayer && (reuse || windowLens.begin(w,h));
     if(!reuse){
@@ -2331,9 +2330,10 @@ function initializeStudioRoom(){
         gl.bindTexture(gl.TEXTURE_2D,texture);
       }
       gl.depthMask(true);gl.disable(gl.BLEND);
-      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,separateWaves,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,linkLit,fastSampling};
+      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,linkLit,fastSampling};
     }
-    if(blurInterior)windowLens.finish(lensScale,opticalPower,eye[0],texture,fastSampling);
+    // Keep the blurred window frame stable against the reflection as focus settles outdoors.
+    if(blurInterior)windowLens.finish(lensScale,opticalPower,eye[0],texture,fastSampling && windowFocus===0);
     if(animateWater)finishWater(basis,texture,!(sway || animateProjection || journey || moving || looking || lensMoving),waterBlur);
 
     shown=true;studioLoading.frame();

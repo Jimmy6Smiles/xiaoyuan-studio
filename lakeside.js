@@ -71,7 +71,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
           vec2 disk=sqrt(k/12.)*vec2(cos(k*2.399963),sin(k*2.399963));
           sum+=texture2D(reflectionMap,clamp(uv+disk*waterBlur/resolution,0.,1.)).rgb;
         }
-        image=sum/13.;
+        image=mix(image,sum/13.,smoothstep(.55,1.55,waterBlur));
       }
       image=mix(sky(reflected),image,hasMirror);
       float fresnel=.020+.98*pow(1.-clamp(dot(-direction,n),0.,1.),5.);
@@ -87,7 +87,6 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     uniform vec3 eye;
     uniform vec2 tileOrigin;
     uniform float mirror,waterHeight,maskWater;
-    uniform bool movingView;
     uniform sampler2D terrainMap,fujiMap,sunMask,canopyMap;
     uniform vec3 fujiUV;
     ${waterAndSky}
@@ -102,10 +101,8 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
         startT=max(startT,min(lo,hi));endT=min(endT,max(lo,hi));
       }
       if(endT>startT){
-        float shoreSteps=movingView?10.:26.;
-        float stepSize=(endT-startT)/shoreSteps;
+        float stepSize=(endT-startT)/26.;
         for(int i=0;i<26;i++){
-          if(float(i)>=shoreSteps)break;
           vec3 p=eye+ray*(startT+(float(i)+.5)*stepSize);
           vec2 en=vec2(dot(p.xz,vec2(-.21491,-.97663)),dot(p.xz,vec2(-.97663,.21491)));
           vec2 uv=(tileOrigin+en*vec2(.00003136,-.00003136)-vec2(.40625,.15625))*8.;
@@ -124,10 +121,8 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
         float first=max(0.,(9700.-eye.x)/ray.x);
         float last=min(distance,(15100.-eye.x)/ray.x);
         if(last>first){
-          float cloudSteps=movingView?8.:20.;
-          float dt=(last-first)/cloudSteps;
+          float dt=(last-first)/20.;
           for(int i=0;i<20;i++){
-            if(float(i)>=cloudSteps)break;
             vec3 p=eye+ray*(first+(float(i)+.5)*dt);
             vec2 q=p.xz-vec2(12600.,-1100.);
             float footprint=1.-dot(q/vec2(2940.,5600.),q/vec2(2940.,5600.));
@@ -327,7 +322,6 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
   const loc=name=>gl.getUniformLocation(program,name);
   const mirrorUniform=loc('mirror'),reflectionUniform=loc('hasMirror'),sizeUniform=loc('resolution');
   const maskUniform=loc('maskWater'),timeUniform=loc('waterTime'),waterBlurUniform=loc('waterBlur');
-  const movingViewUniform=loc('movingView');
   gl.uniform2fv(loc('tileOrigin'),light.origin);
   gl.uniform3fv(loc('fujiUV'),light.fujiUV);
   gl.uniform3fv(loc('sun'),light.sun);
@@ -416,7 +410,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
   function cancelWaves(){cancelAnimationFrame(waveFrame);waveFrame=0;}
   document.addEventListener('visibilitychange',()=>{cancelWaves();if(!document.hidden)requestRender();});
   gl.canvas.addEventListener('webglcontextlost',cancelWaves);
-  function drawLake(matrix,eye,roomAtlas,floorMap,portals,mayAnimate,waterBlur,movingView){
+  function drawLake(matrix,eye,roomAtlas,floorMap,portals,mayAnimate,waterBlur){
     cancelWaves();
     if(!portals.length)return false;
     const frusta=portals.map(r=>studioVisibility.frustum(matrix,r,.68));
@@ -437,7 +431,6 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     gl.uniform1f(maskUniform,animateWater?1:0);
     gl.uniform1f(timeUniform,(performance.now()-clockStart)*.001);
     gl.uniform1f(waterBlurUniform,waterBlur);
-    gl.uniform1i(movingViewUniform,movingView?1:0);
     const showMirror=usable && visibleWater.length>0;
     gl.enable(gl.SCISSOR_TEST);
     if(showMirror){
