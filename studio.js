@@ -137,7 +137,6 @@ function showStation(index, sync = true) {
   el('guitarSound').hidden=s.id!=='about';
   el('darkroomLight').hidden=s.id!=='darkroom';
   el('readExperience').hidden=s.id!=='about';
-  el('previousPortfolio').hidden=s.id!=='entrance';
   el('viewPlaylist').hidden=s.id!=='about';
   closeIndex();
   if(detail.open) detail.close();
