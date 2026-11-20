@@ -53,7 +53,10 @@ function createWindowFocus(gl,emitters){
         bool wood=inTop(p,vec2(2.15,1.73),vec2(2.31,.92),.99)
           || inTop(p,vec2(2.55,-3.92),vec2(2.,.57),.82)
           || inTop(p,vec2(2.15,1.73),vec2(2.21,.82),.355);
-        if(!floorTile && !wood)return base.rgb;
+        bool printTable=inTop(p,vec2(-4.34,4.08),vec2(1.25,.375),.75)
+          && any(greaterThan(abs(p.xz-vec2(-4.04,4.08)),vec2(.55,.174)));
+        bool satin=printTable || inTop(p,vec2(-4.91,-.18),vec2(.279,1.62),.548);
+        if(!floorTile && !wood && !satin)return base.rgb;
         vec3 incoming=normalize(p-viewEye);
         if(incoming.y>-.025)return base.rgb;
         vec3 dir=reflect(incoming,vec3(0.,1.,0.));
@@ -79,13 +82,14 @@ function createWindowFocus(gl,emitters){
             // A reflected object's footprint grows with its distance from
             // the receiver. Contact reflections retain their silhouette.
             if(hasFilters){
-              float cone=wood?.085:.17;
+              float cone=satin?.21:(wood?.085:.17);
               float pixels=hi*cone*.5*size.y*viewScale.y/max(.05,h.z);
               float filterWidth=max(3.,min(size.x,size.y)/110.);
               radiance=mix(radiance,texture2D(softRoom,h.xy).rgb,smoothstep(.6,filterWidth,pixels));
               radiance=mix(radiance,texture2D(broadRoom,h.xy).rgb,smoothstep(filterWidth,3.*filterWidth,pixels));
             }
             float amount=(wood?.108:.067)+(wood?.28:.22)*pow(1.+incoming.y,4.);
+            if(satin)amount=.035+.13*pow(1.+incoming.y,4.);
             return sqrt(mix(base.rgb*base.rgb,radiance,amount*confidence*smoothstep(.8,1.,hit.a)));
           }
           previous=travel;travel+=.055+.011*float(i);

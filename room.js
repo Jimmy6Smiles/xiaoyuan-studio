@@ -7,8 +7,11 @@ async function initializeStudioRoom(){
   const separateRadiance=gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS)>8;
   const fineAtlas=gl.getParameter(gl.MAX_TEXTURE_SIZE)>=4096;
   const lightCoordinates=new Image();
-  if(fineAtlas)lightCoordinates.src='room-light-uv.png?v=3';
+  if(fineAtlas)lightCoordinates.src='room-light-uv.png?v=4';
   const coordinateReady=fineAtlas?lightCoordinates.decode().catch(()=>null):Promise.resolve();
+  const detailImage=new Image();
+  detailImage.src='room-detail-shadows.webp?v=1';
+  const detailReady=detailImage.decode().catch(()=>null);
   const vertex = `
   invariant gl_Position;
   attribute vec3 p,n,c; attribute vec2 uv; attribute float m;
@@ -71,6 +74,25 @@ async function initializeStudioRoom(){
   const lampSlope=1.85,lampFar=5.0;
   const projectionBeat=2.50;
   const lensLink=measureLensLink();
+  // The offline ray tracer reads this same layout. Axis pairs map world metres to texels.
+  const detailCharts={
+    "entrance":{"rect":[652,1344,1024,320],"axes":"xz","lo":[-5.62,3.68],"span":[2.56,.80],"layer":[.747,.762],"light":"entry"},
+    "gallery":{"rect":[4,706,1696,630],"axes":"zy","lo":[-2.65,.70],"span":[6.77,2.52],"layer":[-5.782,-5.689],"light":"track"},
+    "seat":{"rect":[1708,4,248,1320],"axes":"xz","lo":[-5.19,-1.83],"span":[.62,3.30],"layer":[.48,.55],"light":"track"},
+    "entryFloor":{"rect":[688,4,512,288],"axes":"xz","lo":[-5.79,3.26],"span":[3.07,1.73],"layer":[-.012,.009],"light":"entry"},
+    "galleryFloor":{"rect":[4,1732,740,288],"axes":"zx","lo":[-2.40,-5.78],"span":[4.44,1.73],"layer":[-.012,.009],"light":"track"},
+    "counter":{"rect":[4,330,1392,368],"axes":"xz","lo":[-5.46,-4.61],"span":[3.48,.92],"layer":[.896,.906],"light":"safe"},
+    "trays":{"rect":[752,1672,1096,304],"axes":"xz","lo":[-5.215,-4.23],"span":[1.37,.38],"layer":[.897,.986],"light":"safe"},
+    "darkFloor":{"rect":[4,4,676,318],"axes":"xz","lo":[-5.78,-4.865],"span":[4.06,1.905],"layer":[-.012,.009],"light":"safe"},
+    "darkWall":{"rect":[4,1344,640,380],"axes":"xy","lo":[-5.60,.08],"span":[3.83,2.27],"layer":[-4.867,-4.86],"light":"safe"},
+    "bottles":{"rect":[1404,4,100,640],"axes":"bottle","lo":[.9,0],"span":[.225,5],"layer":[0,.072],"light":"safe"}
+  };
+  const detailSize=2048;
+  function chartSample(name,coords){
+    const {rect,lo,span}=detailCharts[name],v=a=>'vec2('+a.map(x=>x.toFixed(6)).join(',')+')';
+    const fixture={entry:'1.',track:'2.',safe:'3.'}[detailCharts[name].light];
+    return 'vec3(sampleDetail(('+coords+'-'+v(lo)+')/'+v(span)+', '+v(rect.slice(0,2))+', '+v(rect.slice(2))+'),'+fixture+')';
+  }
   const fragment = `precision highp float;
   const float kitMM=${rangefinderMM};
   const vec2 cameraFoot=vec2(${cameraFoot[0].toFixed(6)},${cameraFoot[2].toFixed(6)}),lensFoot=vec2(${lensFoot[0].toFixed(6)},${lensFoot[2].toFixed(6)});
@@ -85,6 +107,7 @@ async function initializeStudioRoom(){
   uniform vec2 radianceTexel;
   uniform bool hasRoomRadiance;
   uniform bool hasFineLight;
+  uniform bool hasDetailShadows;
   uniform float activeCard, priorCard, deskMix;
   uniform highp float cardLift[6];
   uniform vec3 eyePoint, sunDirection, shadowAxisU, shadowAxisV;
@@ -241,6 +264,36 @@ async function initializeStudioRoom(){
   }
   float chartVisibility(vec2 uv, vec4 chart){
     return texture2D(roomSurfaces,(chart.xy+.5+clamp(uv,0.,1.)*(chart.zw-1.))/vec2(2048.,1024.)).r;
+  }
+  vec2 sampleDetail(vec2 uv,vec2 origin,vec2 size){
+    if(any(lessThan(uv,vec2(0.))) || any(greaterThan(uv,vec2(1.))))return vec2(1.);
+    return texture2D(cardInk,(origin+clamp(uv*size,vec2(.5),size-.5))/${detailSize.toFixed(1)}).gb;
+  }
+  // Ambient visibility and area-light visibility have different light paths.
+  vec3 detailVisibility(vec3 p,vec3 n){
+    if(!hasDetailShadows || p.x> -1.70)return vec3(1.,1.,0.);
+    if(p.z< -2.95){
+      if(n.y>.85 && abs(p.y)<.012)return ${chartSample("darkFloor","p.xz")};
+      if(n.z>.94 && abs(p.z+4.865)<.006)return ${chartSample("darkWall","p.xy")};
+      if(n.y>.85 && abs(p.y-.9)<.004)return ${chartSample("counter","p.xz")};
+      if(p.y>=.897 && p.y<=.986 && p.z> -4.23 && p.z< -3.85 && p.x> -5.215 && p.x< -3.845)
+        return ${chartSample("trays","p.xz")};
+      if(p.y>.9001 && p.y<1.126 && p.z> -4.525 && p.z< -4.395 && p.x> -5.21 && p.x< -4.48 && abs(n.y)<.88){
+        float bottle=clamp(floor((p.x+5.14)/.148+.5),0.,4.);
+        vec2 d=p.xz-vec2(-5.14+.148*bottle,-4.46);
+        float a=fract(atan(d.y,d.x)/6.2831853+1.);
+        return ${chartSample("bottles","vec2(p.y,bottle+clamp(a,.00391,.99609))")};
+      }
+    }else{
+      if(n.x>.58 && p.x>=-5.782 && p.x<=-5.689 && p.y>.70)return ${chartSample("gallery","p.zy")};
+      if(n.y>.66 && p.y>.746 && p.y<=.762 && p.z>3.67)return ${chartSample("entrance","p.xz")};
+      if(n.y>.66 && p.y>=.48 && p.y<=.55)return ${chartSample("seat","p.xz")};
+      if(n.y>.85 && abs(p.y)<.012){
+        if(p.z>3.25)return ${chartSample("entryFloor","p.xz")};
+        return ${chartSample("galleryFloor","p.zx")};
+      }
+    }
+    return vec3(1.,1.,0.);
   }
   vec4 surfaceMaterial(vec2 uv){
     return texture2D(roomSurfaces,uv*vec2(.5,1.));
@@ -465,6 +518,21 @@ async function initializeStudioRoom(){
     vec2 surf=abs(n.y)>.60?pos.xz:(abs(n.x)>.60?pos.zy:pos.xy);
     float rough=.82;
     float visibility=roomVisibility(pos,n);
+    vec3 detail=detailVisibility(pos,n);
+    bool stoneware=mat>34.5 && mat<35.5;
+    float glaze=0.;
+    if(stoneware){
+      vec2 grain=pos.xz+vec2(.63,-.72)*tex.y;
+      float wash=noise(grain*28.);
+      glaze=smoothstep(.023,.029,tex.y+.003*wash);
+      float fleck=smoothstep(.81,.93,noise(grain*355.));
+      float rings=sin(760.*tex.y+2.*wash+.30*sin(6.28318*tex.x));
+      base*=mix(vec3(.75,.60,.48),vec3(1.01,1.,.985),glaze);
+      base*=.95+.088*wash+.012*rings-.19*fleck;
+      n=normalize(n+vec3(0.,.017*rings,0.)*length(n.xz));
+      rough=mix(.86,.36+.10*wash,glaze);
+    }
+    if(mat>35.5 && mat<36.5)n=faceforward(n,-v,n);
     if(mat<.5)base*=.94+.12*surfaceMaterial(surf*4.8).b;
     if(mat>22.5 && mat<23.5){
       vec2 board=vec2(abs(tex.x),tex.y);
@@ -633,6 +701,7 @@ async function initializeStudioRoom(){
       }
       if(mat>8.5 && mat<9.5)ambient*=mix(.15,1.,smoothstep(.18,.91,visibility));
     }
+    ambient*=mix(.30,1.,detail.x);
     vec3 light=ambient+vec3(1.77,1.37,1.03)*shadow*diffuse;
     // Daylight grazes the actual recess. It is strongest beside the glazing,
     // rolls into the wall below the sill, and fades around the two jambs.
@@ -668,9 +737,10 @@ async function initializeStudioRoom(){
             *belowDesk(pos,emitter,.82,vec2(2.55,-3.92),vec2(2.01,.575));
     }
     vec3 wallAim=normalize(vec3(-1.08,-1.67,0.));
+    float trackShade=detail.z==2.?detail.y:trackVisibility;
     for(int i=0;i<4;i++){
       float z=printCenters[i];
-      light+=trackVisibility*spot(pos,n,vec3(-4.58,3.72,z),wallAim,vec3(1.,.91,.80),5.4,vec2(.80,.95));
+      light+=trackShade*spot(pos,n,vec3(-4.58,3.72,z),wallAim,vec3(1.,.91,.80),5.4,vec2(.80,.95));
     }
     for(int i=0;i<2;i++){
       vec3 axis=profileAxes[i];
@@ -691,15 +761,32 @@ async function initializeStudioRoom(){
     }
     vec3 pendant=vec3(-4.34,2.40,4.08);
     light+=spot(pos,n,pendant,vec3(0.,-1.,0.),vec3(1.,.85,.68),3.9,vec2(.12,.68))
-          *belowDesk(pos,pendant,.75,vec2(-4.34,4.08),vec2(1.275,.395));
+          *belowDesk(pos,pendant,.75,vec2(-4.34,4.08),vec2(1.275,.395))
+          *(detail.z==1.?detail.y:1.);
     vec3 bulbTint=mix(vec3(1.,.07,.012),vec3(1.,.99,.97),darkroomWhite);
     vec3 fill=mix(vec3(.065,.012,.006),vec3(.40,.40,.39),darkroomWhite);
     vec3 bounce=mix(vec3(.78,.065,.016),vec3(.64,.64,.63),darkroomWhite);
     vec3 darkroomLamp=lampLight(pos,n,vec3(-4.29,2.49,-3.86),bulbTint,6.0);
     vec3 safeOffset=pos-vec3(-4.29,2.2,-3.86);
-    float safeVisibility=mix(.52,1.,visibility)*(1.-.65*localContact);
-    light=mix(light,safeVisibility*(fill+bounce/(1.+.65*dot(safeOffset,safeOffset)))+darkroomLamp,dark);
+    float safeVisibility=mix(.52,1.,visibility)*(1.-.65*localContact)*mix(.30,1.,detail.x);
+    light=mix(light,safeVisibility*(fill+bounce/(1.+.65*dot(safeOffset,safeOffset)))+detail.y*darkroomLamp,dark);
     vec3 result=pow(max(base,vec3(0.)),vec3(2.2))*light;
+    if(dark>.99 && mat<.5 && pos.y>.9001 && pos.y<1.125){
+      bool bottle=abs(pos.z+4.46)<.062 && pos.x> -5.205 && pos.x< -4.48 && col.r<.49;
+      bool tray=abs(pos.z+4.04)<.181 && pos.x> -5.21 && pos.x< -3.855 && pos.y<=.986;
+      if(bottle || tray){
+        vec3 l=normalize(vec3(-4.29,2.49,-3.86)-pos);
+        float specular=pow(max(dot(n,normalize(v+l)),0.),bottle?74.:38.);
+        result+=bulbTint*detail.y*max(0.,dot(n,l))*specular*(bottle?.26:.12);
+      }
+    }
+    if(stoneware){
+      vec3 r=reflect(-v,n);
+      float fresnel=.035+.24*pow(1.-max(dot(n,v),0.),4.);
+      float window=reflectedWindow(r,rough);
+      float lamp=pow(max(0.,dot(r,normalize(pendant-pos))),37.);
+      result+=glaze*fresnel*(vec3(.84,.91,.95)*window+vec3(1.,.84,.65)*lamp*2.);
+    }
     if(mat>33.5 && mat<34.5){
       vec3 r=reflect(-v,n);
       float grazing=pow(1.-max(dot(n,v),0.),3.);
@@ -770,7 +857,11 @@ async function initializeStudioRoom(){
       float bulbCone=smoothstep(.36,.86,dot(-bulbDirection,lampAxis));
       float bulbSheen=pow(max(0.,dot(r,bulbDirection)),mix(57.,18.,rough));
       reflected+=warmWhite*bulbCone*bulbSheen*(6./(.4+bulbDistance2));
-      result+=fresnel*reflected*visibility*visibility;
+      if(detail.z==1. && mat<1.5){
+        float opal=pow(max(dot(r,normalize(pendant-pos)),0.),mix(47.,13.,rough));
+        reflected+=vec3(1.,.85,.68)*opal*detail.y;
+      }
+      result+=fresnel*reflected*visibility*visibility*mix(.45,1.,detail.x);
     }
     if(n.y>.90 && (mat>8.5 && mat<9.5 || mat>.5 && mat<1.5 && abs(pos.y-.355)<.004)){
       float shelter=1.-smoothstep(.28,.89,visibility);
@@ -1535,15 +1626,7 @@ async function initializeStudioRoom(){
     pottedPothos(1.71,.82,-4.19,1,0,0,0);
     pottedPothos(-.285,2.475,-4.36,1.02,-.48,11,.48);
     pottedPothos(.070,2.475,-4.545,.76,1.14,27,0);
-    vessel(-5.12,.75,4.02,[[0,.105],[.03,.12],[.13,.155],[.23,.10],[.26,.046],[.29,.05]],['a79578','a78e74','a9997f']);
-    for(let i=0;i<8;i++){
-      const a=i*2.39,base=[-5.12,1.035,4.02],tip=[base[0]+.21*Math.cos(a),1.43+.13*Math.sin(i*3.1),base[2]+.17*Math.sin(a)];
-      tube(base,tip,.005,.002,'6b5544',0,5);
-      for(let j=1;j<=3;j++){
-        const joint=add(base,mult(sub(tip,base),j*.23)),bud=add(joint,[.045*Math.sin(i+j),.038,.036*Math.cos(j+i)]);
-        tube(joint,bud,.003,.002,'6d5943',0,5);tube(bud,add(bud,[0,.018,0]),.014,.008,'92564a',0,6);
-      }
-    }
+    appendEntranceVase([-5.12,.75,4.02],{vertices,add,sub,mult,cross,unit,rgb});
     // Distinctive film tins, archive cartons, slide sleeves and book jackets.
     for(let level=0;level<3;level++){
       const shelf=.435+level*.68;
@@ -1975,7 +2058,10 @@ async function initializeStudioRoom(){
     letter('POWER',px(.184),213,12,'#e4d3ad','sans-serif');
     rule(3,9,509,9,'#bca273',2);rule(3,243,509,243,'#bca273',2);
   });
-  const deskGraphics=createProjectDeskGraphics(gl,program,studioProjects,selectedProject);
+  await detailReady;
+  const detailSheet=detailImage.naturalWidth===detailSize && detailImage.naturalHeight===detailSize?detailImage:null;
+  const deskGraphics=createProjectDeskGraphics(gl,program,studioProjects,selectedProject,detailSheet);
+  gl.uniform1i(gl.getUniformLocation(program,'hasDetailShadows'),detailSheet?1:0);
   drawTile(6,()=>{fill(0,0,512,256,'#25322c');for(let i=0;i<18;i++)rule(i*30,0,i*30,256,'#4b5950');for(let i=0;i<10;i++)rule(0,i*30,512,i*30,'#4b5950');for(let i=0;i<512;i++)rule(i,125+54*Math.sin(i*.048),i+1,125+54*Math.sin((i+1)*.048),'#bada8e',3);letter('CH 1    2.00 V',15,30,16,'#c4d295');});
   drawTile(7,()=>{
     fill(0,0,512,256,'#302c27');
@@ -2188,9 +2274,9 @@ async function initializeStudioRoom(){
   tableImage.src='table-prints.jpg';
   darkroomImage.src='darkroom-prints.jpg';
   surfaceSheet.src='room-surfaces.webp?v=2';
-  roomRadiance.src='room-irradiance.webp';
-  if(fineAtlas)surfaceRadiance.src='room-light-2cm.webp?v=2';
-  roomContacts.src='room-contacts.png?v=2';
+  roomRadiance.src='room-irradiance.webp?v=2';
+  if(fineAtlas)surfaceRadiance.src='room-light-2cm.webp?v=3';
+  roomContacts.src='room-contacts.png?v=3';
   benchProbe.src='workbench-radiance.jpg';
   cameraFinish.src='rangefinder-finish.jpg';
   suedePile.src='suede-pile.jpg';

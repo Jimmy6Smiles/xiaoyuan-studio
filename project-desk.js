@@ -14,10 +14,11 @@ function advanceHoverLifts(lifts,hover,elapsed,reduced){
 
 // The pinboard is printed once. Two screen buffers let the GPU blend between
 // projects without rasterizing text on every animation frame.
-function createProjectDeskGraphics(gl, program, projects, initial) {
+function createProjectDeskGraphics(gl, program, projects, initial, detailSheet) {
   const limit=gl.getParameter(gl.MAX_TEXTURE_SIZE);
   const paper=document.createElement('canvas');
-  paper.width=Math.min(4096,limit);paper.height=paper.width/2;
+  paper.width=Math.min(4096,limit);
+  paper.height=Math.min(limit,Math.max(paper.width/2,detailSheet?detailSheet.height:0));
   const printed=paper.getContext('2d',{alpha:false});
   const display=document.createElement('canvas');
   display.width=display.height=Math.min(2048,limit);
@@ -66,7 +67,16 @@ function createProjectDeskGraphics(gl, program, projects, initial) {
     text(printed,p.title,24,153,p.title.length>14?44:54,'black','Georgia, serif');
     text(printed,p.flow,26,217,24,'#363636');
   });
-  const cards=texture(5,gl.LUMINANCE,paper);
+  // Ink occupies red. The other two channels hold static shadow charts, so
+  // the room still draws on WebGL devices with eight fragment texture units.
+  if(detailSheet){
+    printed.setTransform(1,0,0,1,0,0);
+    printed.globalCompositeOperation='multiply';
+    fill(printed,0,0,paper.width,paper.height,'#ff0000');
+    printed.globalCompositeOperation='lighter';
+    printed.drawImage(detailSheet,0,0,paper.width,paper.height);
+  }
+  const cards=texture(5,detailSheet?gl.RGB:gl.LUMINANCE,paper);
   paper.width=paper.height=1;
   function implementationSheet(p){
     // Pack the portrait LCD sideways in the lower half of the texture.
