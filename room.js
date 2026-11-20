@@ -7,7 +7,7 @@ async function initializeStudioRoom(){
   const separateRadiance=gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS)>8;
   const fineAtlas=gl.getParameter(gl.MAX_TEXTURE_SIZE)>=4096;
   const lightCoordinates=new Image();
-  if(fineAtlas)lightCoordinates.src='room-light-uv.png?v=2';
+  if(fineAtlas)lightCoordinates.src='room-light-uv.png?v=3';
   const coordinateReady=fineAtlas?lightCoordinates.decode().catch(()=>null):Promise.resolve();
   const vertex = `
   invariant gl_Position;
@@ -77,6 +77,7 @@ async function initializeStudioRoom(){
   varying vec3 pos,norm,col,lightUV; varying vec2 tex; varying float mat,localContact;
   varying vec3 fineLightUV;
   uniform vec4 printCenters;
+  uniform vec4 railTile;
   uniform vec3 overhead[2],profileLamps[2],profileAxes[2];
   uniform sampler2D atlas, shadowDepth, runnerMap, metalFinish, roomSurfaces;
   uniform sampler2D cardInk, fromScreen, toScreen;
@@ -336,6 +337,22 @@ async function initializeStudioRoom(){
   }
   void main(){
     vec3 n=normalize(norm),base=col;
+    if(mat>6.5 && mat<7.5){
+      vec3 incident=normalize(pos-eyePoint);
+      n=faceforward(n,incident,n);
+      vec3 refl=reflect(incident,n);
+      float edge=pow(1.-abs(dot(n,incident)),3.);
+      float pane=smoothstep(.32,.60,refl.y)*(1.-smoothstep(.74,.95,refl.y));
+      float sheen=pane*(.65+.35*cos(refl.x*22.));
+      vec3 coating=mix(vec3(.44,.70,.67),vec3(.80,.71,.94),smoothstep(.1,.9,abs(refl.x)));
+      vec3 gloss=mix(coating,vec3(.98,.97,.87),sheen);
+      float reflection=.037+.25*edge+.22*sheen;
+      vec4 transmitted=vec4(0.);
+      if(railTile.z>0.)transmitted=texture2D(atlas,railTile.xy+tex*railTile.zw);
+      float cover=reflection+(1.-reflection)*transmitted.a;
+      gl_FragColor=vec4((reflection*gloss+(1.-reflection)*transmitted.rgb)/cover,cover);
+      return;
+    }
     if(mat<-31.5){
       if(mat<-33.5){
         vec2 uv=tex;
@@ -872,15 +889,7 @@ async function initializeStudioRoom(){
       vec3 glow=mix(vec3(1.,.23,.055),vec3(1.,.99,.97),darkroomWhite);
       result+=glow*(halo+.055*rays*exp(-radius*14.));
     }
-    if(mat>6.5 && mat<7.5){
-      vec3 ng=dot(n,v)<0.?-n:n;
-      vec3 refl=reflect(-v,ng);
-      float edge=pow(1.-abs(dot(ng,v)),3.);
-      float pane=smoothstep(.32,.60,refl.y)*(1.-smoothstep(.74,.95,refl.y));
-      float sheen=pane*(.65+.35*cos(refl.x*22.));
-      vec3 coating=mix(vec3(.44,.70,.67),vec3(.80,.71,.94),smoothstep(.1,.9,abs(refl.x)));
-      gl_FragColor=vec4(mix(coating,vec3(.98,.97,.87),sheen),.037+.25*edge+.22*sheen);
-    }else gl_FragColor=vec4(clamp(result,0.,1.),1.);
+    gl_FragColor=vec4(clamp(result,0.,1.),1.);
 
   }`;
   const program=gl.createProgram();
@@ -1250,6 +1259,7 @@ async function initializeStudioRoom(){
       face(lensPoint(center,a,ra,t),lensPoint(center,a,ra,u),lensPoint(center,b,rb,u),lensPoint(center,b,rb,t),color,material);
     }
   }
+  const railMountStart=vertices.length/12;
   for(let i=0;i<lensProjects.length;i++){
     const x=1.49+i*.36,center=[x,1.43,1.15];
     opticalCenters.push(center);
@@ -1259,6 +1269,7 @@ async function initializeStudioRoom(){
     const profile=[[-.012,.148],[.012,.148],[.014,.144],[.014,.136],[-.014,.136],[-.014,.145],[-.012,.148]];
     for(let j=1;j<profile.length;j++)latheBand(center,...profile[j-1],...profile[j],'93836e',3);
   }
+  const railMountEnd=vertices.length/12;
 
   softBox(3.93,.99,1.34,.72,.42,.39,'ada898');box(3.84,1.09,1.543,.37,.23,.012,'293a33');for(let i=0;i<28;i++)box(3.67+i*.012,1.19+.055*Math.sin(i*.48),1.553,.013,.012,.01,'a3c483',4);for(let i=0;i<6;i++)tube([4.11+(i%2)*.066,1.1+Math.floor(i/2)*.075,1.55],[4.11+(i%2)*.066,1.1+Math.floor(i/2)*.075,1.575],.021,.021,'504e47',3);
   function lamp(x,y,z){
@@ -1715,15 +1726,26 @@ async function initializeStudioRoom(){
     registerTransparent(first);
   }
   opticalCenters.forEach((center,i)=>{
-    const first=vertices.length/12,radius=.137;
+    const first=vertices.length/12,{radius,sag}=railOptics;
     for(const side of [-1,1]){
+      function sample(f,angle){
+        const u=f*Math.cos(angle),v=f*Math.sin(angle);
+        const half=.004+Math.max(0,-sag[i])+sag[i]*(1-f*f);
+        const slope=2*sag[i]/radius;
+        return [lensPoint(center,side*half,radius*f,angle),
+          unit(add(mult(railOptics.axis,side),add(mult(railOptics.transverse,slope*u),[0,slope*v,0]))),
+          [.5+.5*u,.5+.5*v]];
+      }
       for(let k=0;k<12;k++){
-        const r=k/12,R=(k+1)/12;
-        const depth=f=>side*(.004+(.011+.0025*i)*(1-f*f));
-        latheBand(center,depth(r),radius*r,depth(R),radius*R,'abcac4',7);
+        for(let j=0;j<64;j++){
+          const t=j*Math.PI/32,T=(j+1)*Math.PI/32;
+          const points=[sample(k/12,t),sample(k/12,T),sample((k+1)/12,T),sample((k+1)/12,t)];
+          smoothQuad(points.map(p=>p[0]),points.map(p=>p[1]),[.67,.79,.77],7,points.map(p=>p[2]));
+        }
       }
     }
     registerTransparent(first);
+    transparentGroups[transparentGroups.length-1].lens=i;
   });
   // A single uninterrupted print receives light across both sections.
   const paperWidth=profilePaper.width,paperHeight=profilePaper.height;
@@ -1753,7 +1775,7 @@ async function initializeStudioRoom(){
   let surfaceRows=0;
   await coordinateReady;
   const chunks=(()=>{
-    const layout=studioVisibility.roomChunks(vertices,[windowStart,windowEnd,curtainStart,curtainEnd,photosStart,photosEnd,casterCount,solidCount]);
+    const layout=studioVisibility.roomChunks(vertices,[windowStart,windowEnd,curtainStart,curtainEnd,photosStart,photosEnd,casterCount,solidCount],railMountStart,railMountEnd);
     measureCenter=studioVisibility.centerMeter(layout.packed,layout.chunks,solidCount);
     const bits=new Uint32Array(layout.packed.buffer);
     let signature=2166136261;
@@ -1813,6 +1835,7 @@ async function initializeStudioRoom(){
   const curtainChunks=chunks.filter(c=>c[0]>=curtainStart && c[0]<curtainEnd);
   const photoChunks=chunks.filter(c=>c[0]>=photosStart && c[0]<photosEnd);
   const fixedChunks=chunks.filter(c=>(c[0]<curtainStart || c[0]>=curtainEnd) && (c[0]<photosStart || c[0]>=photosEnd));
+  const mounts=fixedChunks.filter(c=>c.deferred),backgroundChunks=fixedChunks.filter(c=>!c.deferred);
   for(const c of curtainChunks){
     // Allow for the animated hem when testing these opaque cells against the camera.
     c[2]-=.020;c[5]+=.020;c[4]-=.014;c[7]+=.014;
@@ -2173,8 +2196,8 @@ async function initializeStudioRoom(){
   suedePile.src='suede-pile.jpg';
   const roomImagesReady=Promise.allSettled([source.decode(),cameraFinish.decode(),suedePile.decode(),profilePortrait.decode(),playlistCovers.decode(),galleryImage.decode(),tableImage.decode(),darkroomImage.decode(),surfaceSheet.decode(),benchProbe.decode(),roomRadiance.decode(),roomContacts.decode(),fineAtlas && surfaceRadiance.decode()]);
   roomImagesReady.then(()=>{imageReady();studioLoading.done('prints');requestRender();});
-  function drawOpaqueSurfaces(inView){
-    studioVisibility.drawRanges(fixedChunks,inView,drawRoom);
+  function drawOpaqueSurfaces(inView,deferMounts){
+    studioVisibility.drawRanges(deferMounts?backgroundChunks:fixedChunks,inView,drawRoom);
     gl.bindTexture(gl.TEXTURE_2D,photoMap);
     studioVisibility.drawRanges(photoChunks,inView,drawRoom);
     gl.bindTexture(gl.TEXTURE_2D,suedeMap);
@@ -2208,6 +2231,7 @@ async function initializeStudioRoom(){
   const darkroomLightUniform=gl.getUniformLocation(program,'darkroomWhite');
   const fastShadowsUniform=gl.getUniformLocation(program,'fastShadows');
   const projectionUniform=gl.getUniformLocation(program,'projectionReveal');
+  const railTileUniform=gl.getUniformLocation(program,'railTile');
   const projectionTimeUniform=gl.getUniformLocation(program,'projectionTime');
   const linkFrameUniform=gl.getUniformLocation(program,'linkFrame');
   let darkroomTarget=0,darkroomFrom=0,lightSwitchTime=0;
@@ -2779,7 +2803,7 @@ async function initializeStudioRoom(){
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     if(reuseOutside)cancelWaves();
     const animateWater=reuseOutside?focusLayers.water:drawLake(mat,eye,texture,floorMap,rugMap,portals,separateWaves,waterBlur,cloudTime);
-    if(lensAvailable && portals.length)drawWindowGlass(mat,eye,portals,w,h,waterBlur,texture,!reuseOutside);
+    const exterior=lensAvailable && portals.length?drawWindowGlass(mat,eye,portals,w,h,waterBlur,texture,!reuseOutside):null;
     const blurInterior=useLayer && (reuse || windowLens.begin(w,h));
     if(!reuse){
       gl.bindTexture(gl.TEXTURE_2D,texture);
@@ -2793,12 +2817,35 @@ async function initializeStudioRoom(){
       const inView=c=>studioVisibility.intersects(c,frustum) && (insideDarkroom?
         c[2]<-1.53 && c[4]<-2.71 && c[5]>-5.97 && c[7]>-5.05 && c[3]<3.26:
         !(c[5]<-1.72 && c[7]<-3.01 && c[2]>-5.76 && c[4]>-4.80 && c[6]<3.07));
-      drawOpaqueSurfaces(inView);
-      drawPrintedSurfaces(frustum);
-      gl.enable(gl.BLEND);gl.blendFuncSeparate(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA,gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
       const viewDepth=g=>dot(sub(g.center,eye),forward);
       transparentGroups.sort((a,b)=>viewDepth(b)-viewDepth(a));
-      for(const g of transparentGroups)if(inView(g.bounds))drawRoom(g.first,g.count);
+      const visible=transparentGroups.filter(g=>inView(g.bounds));
+      const elements=[];
+      for(const g of visible)if(g.lens!==undefined){
+        g.tile=null;
+        g.side=dot(sub(eye,g.center),railOptics.axis)>=0?1:-1;
+        g.diameter=h*sy*railOptics.radius/Math.max(.04,viewDepth(g));
+        if(index===2 && g.diameter>=20)elements.push(g);
+      }
+      const deferMounts=blurInterior && elements.length>0;
+      drawOpaqueSurfaces(inView,deferMounts);
+      drawPrintedSurfaces(frustum);
+      const glass=deferMounts && windowLens.refractRail(elements,mat,eye,exterior);
+      if(deferMounts){
+        bindRoom();deskGraphics.bind();gl.bindTexture(gl.TEXTURE_2D,texture);
+        studioVisibility.drawRanges(mounts,inView,drawRoom);
+      }
+      gl.enable(gl.BLEND);gl.blendFuncSeparate(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA,gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
+      for(const g of visible){
+        if(g.lens===undefined){drawRoom(g.first,g.count);continue;}
+        if(glass && g.tile){
+          gl.bindTexture(gl.TEXTURE_2D,glass);gl.uniform4fv(railTileUniform,g.tile);
+        }else gl.uniform4f(railTileUniform,0,0,0,0);
+        const sideCount=g.count/2;
+        drawRoom(g.first+(g.side>0?sideCount:0),sideCount);
+        if(glass && g.tile)gl.uniform4f(railTileUniform,0,0,0,0);
+        gl.bindTexture(gl.TEXTURE_2D,texture);
+      }
       if(reveal>0){
         gl.uniform1f(projectionUniform,reveal);
         gl.uniform1f(projectionTimeUniform,projectionSeconds);

@@ -277,5 +277,13 @@ function createWindowFocus(gl,emitters){
     gl.disable(gl.BLEND);gl.enable(gl.DEPTH_TEST);
     gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,roomAtlas);
   }
-  return {begin,finish,apertureScale,filterLighting,supportsReflections:!!depthExtension};
+  let rail;
+  function refractRail(groups,matrix,eye,outside){
+    if(!useDepth || !groups.length)return null;
+    if(rail===undefined)rail=createRailRefraction(gl,link,triangle);
+    if(rail)rail.draw(groups,matrix,eye,color,depth,outside);
+    gl.bindFramebuffer(gl.FRAMEBUFFER,frame);gl.viewport(0,0,width,height);
+    return rail && rail.map;
+  }
+  return {begin,finish,apertureScale,filterLighting,refractRail,supportsReflections:!!depthExtension};
 }

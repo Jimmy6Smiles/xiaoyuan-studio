@@ -60,7 +60,7 @@ const studioVisibility=(()=>{
     }
     if(count)draw(first,count);
   }
-  function roomChunks(data,ends){
+  function roomChunks(data,ends,deferredStart=0,deferredEnd=0){
     const packed=new Float32Array(data.length),chunks=[];
     let from=0,write=0;
     for(const end of ends){
@@ -78,9 +78,16 @@ const studioVisibility=(()=>{
         }
       }
       for(const {triangles,bounds} of cells.values()){
-        bounds[0]=write/12;bounds[1]=triangles.length*3;
-        for(const k of triangles){for(let i=k;i<k+36;i++)packed[write++]=data[i];}
-        chunks.push(bounds);
+        let run=null;
+        for(const k of triangles){
+          const deferred=k>=deferredStart*12 && k<deferredEnd*12;
+          if(!run || run.deferred!==deferred){
+            run=bounds.slice();run[0]=write/12;run[1]=0;run.deferred=deferred;
+            chunks.push(run);
+          }
+          run[1]+=3;
+          for(let i=k;i<k+36;i++)packed[write++]=data[i];
+        }
       }
       from=end;
     }

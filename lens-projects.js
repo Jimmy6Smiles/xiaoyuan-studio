@@ -20,6 +20,98 @@ const lensProjects=[
 
 // Panel geometry, lettering and the interactive link share these texture coordinates.
 const lensPanel={width:1024,height:512,metres:.80,bottom:.32};
+// Signed sag of each air/glass surface, measured from the edge to the centre.
+// Negative elements retain a thin centre and fit within the retaining ring.
+const railOptics={radius:.137,axis:[.93,0,.368],transverse:[-.368,0,.93],
+  sag:[.0026,-.0032,.004,-.0036,.003],index:1.52};
+
+// Shade one small tile per visible element from the already-rendered room.
+// Its depth and colour stay on the GPU. The projector is drawn afterwards.
+function createRailRefraction(gl,link,triangle){
+  const vertex='attribute vec2 corner;varying vec2 disc;void main(){disc=corner;gl_Position=vec4(corner,0.,1.);}';
+  const program=link(vertex,`precision highp float;
+    varying vec2 disc;
+    uniform sampler2D background,depth,exterior;
+    uniform mat4 camera;
+    uniform vec3 eye,center;
+    uniform float side,sag,hasOutside;
+    const vec3 axis=vec3(${railOptics.axis.join(',')}),across=vec3(${railOptics.transverse.join(',')});
+    const vec3 up=vec3(0.,1.,0.);
+    const float radius=${railOptics.radius},ior=${railOptics.index};
+    vec2 project(vec3 point){
+      vec4 clip=camera*vec4(point,1.);
+      return .5+.5*clip.xy/max(.04,clip.w);
+    }
+    float distanceZ(vec2 uv){return .04004/(1.001-texture2D(depth,uv).r);}
+    void main(){
+      vec2 d=disc/max(1.,length(disc));
+      float halfWidth=.004+max(0.,-sag)+sag*(1.-dot(d,d));
+      vec3 radial=across*d.x+up*d.y;
+      vec3 front=center+radius*radial+side*halfWidth*axis;
+      vec3 normal=normalize(side*axis+2.*sag/radius*radial);
+      vec3 incoming=normalize(front-eye);
+      vec3 glass=refract(incoming,normal,1./ior);
+      float run=2.*halfWidth/max(.18,-dot(glass,side*axis));
+      vec3 exitPoint=front+run*glass;
+      vec2 backDisc=vec2(dot(exitPoint-center,across),exitPoint.y-center.y)/radius;
+      vec3 backNormal=normalize(side*axis-2.*sag/radius*(backDisc.x*across+backDisc.y*up));
+      vec3 outgoing=refract(glass,backNormal,ior);
+      vec4 start=camera*vec4(exitPoint,1.),direction=camera*vec4(outgoing,0.);
+      vec2 origin=project(front),uv=origin;
+      if(direction.w>.04){
+        // Reproject onto the sampled background depth, refining once when a
+        // ray crosses from the nearby bench to the more distant wall or floor.
+        for(int i=0;i<2;i++){
+          float t=clamp((distanceZ(uv)-start.w)/direction.w,0.,38.);
+          vec4 hit=start+t*direction;
+          uv=.5+.5*hit.xy/max(.04,hit.w);
+        }
+      }
+      vec2 border=min(uv,1.-uv);
+      float valid=smoothstep(0.,.018,min(border.x,border.y))*
+        smoothstep(.008,.065,distanceZ(uv)-start.w);
+      uv=mix(origin,uv,valid);
+      vec4 room=texture2D(background,uv);
+      if(room.a<.999 && hasOutside>.5)room+=(1.-room.a)*texture2D(exterior,uv);
+      gl_FragColor=room;
+    }`);
+  const loc=Object.fromEntries(['camera','eye','center','side','sag','background','depth','exterior','hasOutside']
+    .map(k=>[k,gl.getUniformLocation(program,k)]));
+  const corner=gl.getAttribLocation(program,'corner');
+  const tile=Math.min(256,Math.floor(gl.getParameter(gl.MAX_TEXTURE_SIZE)/railOptics.sag.length));
+  const width=tile*railOptics.sag.length;
+  const map=gl.createTexture(),target=gl.createFramebuffer();
+  gl.bindTexture(gl.TEXTURE_2D,map);
+  for(const p of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,p,gl.LINEAR);
+  for(const p of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])gl.texParameteri(gl.TEXTURE_2D,p,gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,width,tile,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,target);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,map,0);
+  if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE){
+    gl.deleteFramebuffer(target);gl.deleteTexture(map);gl.deleteProgram(program);return null;
+  }
+  return {map,draw(groups,camera,eye,room,depth,outside){
+    gl.bindFramebuffer(gl.FRAMEBUFFER,target);
+    gl.disable(gl.DEPTH_TEST);gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER,triangle);
+    gl.enableVertexAttribArray(corner);gl.vertexAttribPointer(corner,2,gl.FLOAT,false,0,0);
+    gl.activeTexture(gl.TEXTURE5);gl.bindTexture(gl.TEXTURE_2D,depth);
+    gl.activeTexture(gl.TEXTURE6);gl.bindTexture(gl.TEXTURE_2D,outside||room);
+    gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,room);
+    gl.uniform1i(loc.background,0);gl.uniform1i(loc.depth,5);gl.uniform1i(loc.exterior,6);
+    gl.uniform1f(loc.hasOutside,outside?1:0);
+    gl.uniformMatrix4fv(loc.camera,false,camera);gl.uniform3fv(loc.eye,eye);
+    for(const g of groups){
+      const size=Math.min(tile,Math.max(24,Math.ceil(g.diameter)));
+      const x=g.lens*tile;
+      gl.viewport(x,0,size,size);
+      gl.uniform3fv(loc.center,g.center);gl.uniform1f(loc.sag,railOptics.sag[g.lens]);gl.uniform1f(loc.side,g.side);
+      gl.drawArrays(gl.TRIANGLES,0,3);
+      g.tile=[(x+.5)/width,.5/tile,(size-1)/width,(size-1)/tile];
+    }
+    gl.enable(gl.DEPTH_TEST);
+  }};
+}
 function measureLensLink(){
   const text='View on GitHub',font='600 37px "Segoe UI", sans-serif',x=56,baseline=452;
   const ctx=document.createElement('canvas').getContext('2d');

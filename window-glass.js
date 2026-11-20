@@ -143,5 +143,6 @@ function createWindowGlazing(gl,requestRender){
       gl.uniform1f(loc.highWindow,portal[4]);gl.drawArrays(gl.TRIANGLES,6*portal[4],6);
     }
     gl.enable(gl.DEPTH_TEST);gl.bindTexture(gl.TEXTURE_2D,roomAtlas);
+    return outside;
   };
 }
