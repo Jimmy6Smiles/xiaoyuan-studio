@@ -2848,9 +2848,12 @@ async function initializeStudioRoom(){
         g.tile=null;
         g.side=dot(sub(eye,g.center),railOptics.axis)>=0?1:-1;
         g.diameter=h*sy*railOptics.radius/Math.max(.04,viewDepth(g));
-        if(index===2 && g.diameter>=20)elements.push(g);
+        // Navigation changes the destination before the camera starts moving.
+        // Fade only when the glass itself is too small to resolve on screen.
+        g.strength=ease(Math.max(0,Math.min(1,(g.diameter-12)/(32-12))));
+        if(g.strength>0)elements.push(g);
       }
-      const deferMounts=blurInterior && elements.length>0;
+      const deferMounts=blurInterior && windowLens.supportsReflections && elements.length>0;
       drawOpaqueSurfaces(inView,deferMounts);
       drawPrintedSurfaces(frustum);
       const glass=deferMounts && windowLens.refractRail(elements,mat,eye,exterior,now,(width,height)=>{

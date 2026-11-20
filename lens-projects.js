@@ -34,7 +34,7 @@ function createRailRefraction(gl,link,triangle){
     uniform sampler2D background,depth,exterior;
     uniform mat4 camera;
     uniform vec3 eye,center;
-    uniform float side,sag,hasOutside;
+    uniform float side,sag,hasOutside,strength;
     const vec3 axis=vec3(${railOptics.axis.join(',')}),across=vec3(${railOptics.transverse.join(',')});
     const vec3 up=vec3(0.,1.,0.);
     const float radius=${railOptics.radius},ior=${railOptics.index};
@@ -70,12 +70,12 @@ function createRailRefraction(gl,link,triangle){
       vec2 border=min(uv,1.-uv);
       float valid=smoothstep(0.,.018,min(border.x,border.y))*
         smoothstep(.008,.065,distanceZ(uv)-start.w);
-      uv=mix(origin,uv,valid);
+      uv=mix(origin,uv,valid*strength);
       vec4 room=texture2D(background,uv);
       if(room.a<.999 && hasOutside>.5)room+=(1.-room.a)*texture2D(exterior,uv);
-      gl_FragColor=room;
+      gl_FragColor=room*strength;
     }`);
-  const loc=Object.fromEntries(['camera','eye','center','side','sag','background','depth','exterior','hasOutside']
+  const loc=Object.fromEntries(['camera','eye','center','side','sag','strength','background','depth','exterior','hasOutside']
     .map(k=>[k,gl.getUniformLocation(program,k)]));
   const corner=gl.getAttribLocation(program,'corner');
   const tile=Math.min(256,Math.floor(gl.getParameter(gl.MAX_TEXTURE_SIZE)/railOptics.sag.length));
@@ -105,6 +105,7 @@ function createRailRefraction(gl,link,triangle){
       const size=Math.min(tile,Math.max(24,Math.ceil(g.diameter)));
       const x=g.lens*tile;
       gl.viewport(x,0,size,size);
+      gl.uniform1f(loc.strength,g.strength);
       gl.uniform3fv(loc.center,g.center);gl.uniform1f(loc.sag,railOptics.sag[g.lens]);gl.uniform1f(loc.side,g.side);
       gl.drawArrays(gl.TRIANGLES,0,3);
       g.tile=[(x+.5)/width,.5/tile,(size-1)/width,(size-1)/tile];
