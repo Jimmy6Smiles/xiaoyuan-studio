@@ -443,8 +443,8 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
   function cancelWaves(){cancelAnimationFrame(waveFrame);waveFrame=0;}
   document.addEventListener('visibilitychange',()=>{cancelWaves();if(!document.hidden)requestRender();});
   gl.canvas.addEventListener('webglcontextlost',cancelWaves);
-  function drawLake(matrix,eye,roomAtlas,floorMap,rugMap,portals,mayAnimate,waterBlur,cloudTime){
-    cancelWaves();
+  function drawLake(matrix,eye,roomAtlas,floorMap,rugMap,portals,mayAnimate,waterBlur,cloudTime,offscreenSize){
+    if(!offscreenSize)cancelWaves();
     if(!portals.length)return false;
     const frusta=portals.map(r=>studioVisibility.frustum(matrix,r,.68));
     const visible=c=>frusta.some(f=>studioVisibility.intersects(c,f));
@@ -458,14 +458,14 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     gl.activeTexture(gl.TEXTURE7);gl.bindTexture(gl.TEXTURE_2D,skyTexture);
     gl.activeTexture(gl.TEXTURE0);
     if(state)vao.bindVertexArrayOES(state);else layout();
-    const w=gl.drawingBufferWidth,h=gl.drawingBufferHeight;
-    if(visibleWater.length)resizeMirror(w,h);
+    const [w,h]=offscreenSize || [gl.drawingBufferWidth,gl.drawingBufferHeight];
+    if(!offscreenSize && visibleWater.length)resizeMirror(w,h);
     gl.uniform2f(sizeUniform,w,h);
     gl.uniform1f(maskUniform,animateWater?1:0);
     gl.uniform1f(timeUniform,(performance.now()-clockStart)*.001);
     gl.uniform1f(waterBlurUniform,waterBlur);
     gl.uniform1f(cloudUniform,cloudTime);
-    const showMirror=usable && visibleWater.length>0;
+    const showMirror=!offscreenSize && usable && visibleWater.length>0;
     gl.enable(gl.SCISSOR_TEST);
     if(showMirror){
       // Reflect the viewpoint and its basis across the horizontal lake, then

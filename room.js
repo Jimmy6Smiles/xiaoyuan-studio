@@ -2213,6 +2213,29 @@ async function initializeStudioRoom(){
     }
     gl.bindTexture(gl.TEXTURE_2D,texture);
   }
+  function railBackgroundCamera(origin){
+    const forward=unit(sub(opticalCenters[Math.floor(opticalCenters.length/2)],origin));
+    const right=unit(cross(forward,[0,1,0])),up=cross(right,forward);
+    // Include the whole aperture and leave angular room for the outgoing
+    // rays. Fit the complete rail even when looking along it from either end.
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+    for(const center of opticalCenters){
+      const delta=sub(center,origin),z=dot(delta,forward),r=railOptics.radius;
+      if(z<=r)return null;
+      const x=dot(delta,right)/z,y=dot(delta,up)/z;
+      const padX=(1+Math.abs(x))*r/(z-r)+.32*(1+x*x);
+      const padY=(1+Math.abs(y))*r/(z-r)+.32*(1+y*y);
+      minX=Math.min(minX,x-padX);maxX=Math.max(maxX,x+padX);
+      minY=Math.min(minY,y-padY);maxY=Math.max(maxY,y+padY);
+    }
+    const horizontal=sub(mult(right,2/(maxX-minX)),mult(forward,(maxX+minX)/(maxX-minX)));
+    const vertical=sub(mult(up,2/(maxY-minY)),mult(forward,(maxY+minY)/(maxY-minY)));
+    const matrix=[];
+    for(let i=0;i<3;i++)matrix.push(horizontal[i],vertical[i],1.002*forward[i],forward[i]);
+    const depth=-dot(forward,origin);
+    matrix.push(-dot(horizontal,origin),-dot(vertical,origin),1.002*depth-.08008,depth);
+    return matrix;
+  }
   // Match the horizontal view of a 24 mm lens on a 36 mm-wide frame.
   const aboutHalfWidth=36/(2*24);
   const aboutAngle=aspect=>2*Math.atan(aboutHalfWidth/aspect)*180/Math.PI;
@@ -2830,9 +2853,26 @@ async function initializeStudioRoom(){
       const deferMounts=blurInterior && elements.length>0;
       drawOpaqueSurfaces(inView,deferMounts);
       drawPrintedSurfaces(frustum);
-      const glass=deferMounts && windowLens.refractRail(elements,mat,eye,exterior);
+      const glass=deferMounts && windowLens.refractRail(elements,mat,eye,exterior,now,(width,height)=>{
+        const camera=railBackgroundCamera(eye);
+        if(!camera)return null;
+        const backgroundFrustum=studioVisibility.frustum(camera);
+        const windows=studioVisibility.windows(camera,width,height);
+        if(windows.length){
+          drawLake(camera,eye,texture,floorMap,rugMap,windows,false,waterBlur,cloudTime,[width,height]);
+          gl.clear(gl.DEPTH_BUFFER_BIT);
+        }
+        bindRoom();deskGraphics.bind();gl.bindTexture(gl.TEXTURE_2D,texture);
+        gl.uniformMatrix4fv(uniform,false,camera);gl.uniform1f(widthUniform,width);
+        gl.uniform1i(fastShadowsUniform,0);
+        drawOpaqueSurfaces(c=>studioVisibility.intersects(c,backgroundFrustum),true);
+        drawPrintedSurfaces(backgroundFrustum);
+        return camera;
+      });
       if(deferMounts){
         bindRoom();deskGraphics.bind();gl.bindTexture(gl.TEXTURE_2D,texture);
+        gl.uniformMatrix4fv(uniform,false,mat);gl.uniform1f(widthUniform,w);
+        gl.uniform1i(fastShadowsUniform,fastSampling?1:0);
         studioVisibility.drawRanges(mounts,inView,drawRoom);
       }
       gl.enable(gl.BLEND);gl.blendFuncSeparate(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA,gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);

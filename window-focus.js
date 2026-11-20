@@ -277,11 +277,36 @@ function createWindowFocus(gl,emitters){
     gl.disable(gl.BLEND);gl.enable(gl.DEPTH_TEST);
     gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,roomAtlas);
   }
-  let rail;
-  function refractRail(groups,matrix,eye,outside){
+  // The five elements share one view from the visitor's eye. Turning in
+  // place cannot clip its contents at the edge of the visible canvas.
+  function createRailBackground(){
+    const w=Math.min(1280,gl.getParameter(gl.MAX_TEXTURE_SIZE)),h=Math.floor(w/2);
+    const buffer=gl.createFramebuffer(),map=texture(gl.LINEAR),z=texture(gl.NEAREST);
+    target(buffer,map,w,h);
+    gl.bindTexture(gl.TEXTURE_2D,z);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.TEXTURE_2D,z,0);
+    for(const type of [gl.UNSIGNED_INT,gl.UNSIGNED_SHORT]){
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.DEPTH_COMPONENT,w,h,0,gl.DEPTH_COMPONENT,type,null);
+      if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE)
+        return {buffer,map,z,w,h,eye:[],matrix:null,time:-Infinity};
+    }
+    gl.deleteTexture(z);gl.deleteTexture(map);gl.deleteFramebuffer(buffer);
+    return null;
+  }
+  let rail,background;
+  function refractRail(groups,matrix,eye,outside,now,capture){
     if(!useDepth || !groups.length)return null;
     if(rail===undefined)rail=createRailRefraction(gl,link,triangle);
-    if(rail)rail.draw(groups,matrix,eye,color,depth,outside);
+    if(rail && background===undefined)background=createRailBackground();
+    if(background && (now-background.time>=250 || eye.some((v,i)=>v!==background.eye[i]))){
+      gl.bindFramebuffer(gl.FRAMEBUFFER,background.buffer);
+      gl.viewport(0,0,background.w,background.h);
+      gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+      background.matrix=capture(background.w,background.h);
+      background.eye=eye.slice();background.time=now;
+    }
+    if(background && background.matrix)rail.draw(groups,background.matrix,eye,background.map,background.z,null);
+    else if(rail)rail.draw(groups,matrix,eye,color,depth,outside);
     gl.bindFramebuffer(gl.FRAMEBUFFER,frame);gl.viewport(0,0,width,height);
     return rail && rail.map;
   }
