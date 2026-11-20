@@ -1,6 +1,6 @@
 /* Local tangent-plane landscape in metres, sharing the studio's viewpoint.
    Draw it before the room with its own depth range for kilometre-scale relief. */
-function createLakeLandscape(gl, mesh, light, requestRender) {
+function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
   const derivatives=gl.getExtension('OES_standard_derivatives');
   const vertexSource = `
     attribute vec3 position, tint;
@@ -35,7 +35,58 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     uniform vec2 resolution;
     uniform float waterTime,hasMirror,waterBlur;
     uniform sampler2D skyMap,reflectionMap;
+    uniform sampler2D shadowAtlas,shoreScene;
+    uniform float shadowStep;
+    uniform mat4 shoreProjection;
+    uniform vec2 shoreSize;
+    uniform bool traceWater;
     const float pi=3.14159265;
+    const vec2 chartSize=vec2(3072.,1536.);
+    vec3 groundShadow(vec3 p){
+      vec2 chart=p.xz/shadowStep+512.;
+      vec2 edge=min(chart,1024.-chart);
+      float inside=smoothstep(0.,2.,min(edge.x,edge.y));
+      vec2 uv=(vec2(1440.,0.)+clamp(chart,.5,1023.5))/chartSize;
+      return mix(vec3(1.),texture2D(shadowAtlas,uv).rgb,inside);
+    }
+    // The capture contains only outdoor geometry. RGB retains its colour;
+    // alpha and the two low bits of R/G carry 12 bits of logarithmic view depth.
+    float shoreDepth(vec2 uv){
+      vec4 s=floor(texture2D(shoreScene,(floor(uv*shoreSize)+.5)/shoreSize)*255.+.5);
+      float code=s.a*16.+mod(s.r,4.)*4.+mod(s.g,4.);
+      return code>4094.5?1.e7:exp2(code*(17./4094.))-1.;
+    }
+    vec4 waterHit(vec3 p,vec3 dir){
+      vec4 start=shoreProjection*vec4(p,1.),delta=shoreProjection*vec4(dir,0.);
+      float travel=max(1.4,start.w*.004),previous=0.;
+      for(int i=0;i<21;i++){
+        vec4 clip=start+delta*travel;
+        vec2 uv=.5+.5*clip.xy/clip.w;
+        if(clip.w<.7 || (clip.w>5500. && delta.w>=0.) ||
+           any(lessThan(uv,vec2(.002))) || any(greaterThan(uv,vec2(.998))))break;
+        if(clip.w>=shoreDepth(uv)){
+          float low=previous,high=travel;
+          for(int j=0;j<6;j++){
+            float t=.5*(low+high);
+            clip=start+delta*t;
+            uv=.5+.5*clip.xy/clip.w;
+            if(clip.w>=shoreDepth(uv))high=t;else low=t;
+          }
+          clip=start+delta*high;
+          uv=.5+.5*clip.xy/clip.w;
+          float gap=abs(clip.w-shoreDepth(uv));
+          vec2 edge=min(uv,1.-uv);
+          float confidence=(1.-smoothstep(.5,2.5,gap/max(1.,clip.w*.003)))*
+            smoothstep(.002,.045,min(edge.x,edge.y))*smoothstep(.4,2.,high);
+          vec2 footprint=vec2(1.25,.55)/shoreSize;
+          vec3 color=.50*texture2D(shoreScene,uv).rgb+
+            .25*(texture2D(shoreScene,uv-footprint).rgb+texture2D(shoreScene,uv+footprint).rgb);
+          return vec4(color,confidence);
+        }
+        previous=travel;travel=1.55*travel+2.;
+      }
+      return vec4(0.);
+    }
     vec3 sky(vec3 dir){
       float az=atan(dir.z,dir.x)-atan(sun.z,sun.x);
       return texture2D(skyMap,vec2(fract(.5+az/(2.*pi)),1.-asin(clamp(dir.y,0.,1.))/(.5*pi))).rgb;
@@ -74,9 +125,19 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
         image=mix(image,sum/13.,smoothstep(.55,1.55,waterBlur));
       }
       image=mix(sky(reflected),image,hasMirror);
+      if(traceWater && reflected.y>0. && waterBlur<3. && dist<6000.){
+        // A distant water pixel integrates many small ripples. Trace its
+        // mean normal so a single crest cannot pull a tree across the lake.
+        vec3 meanNormal=normalize(mix(vec3(0.,1.,0.),n,mix(.56,.16,smoothstep(70.,900.,dist))));
+        vec4 hit=waterHit(world+vec3(0.,.16,0.),reflect(direction,meanNormal));
+        image=mix(image,hit.rgb,.44*hit.a*(1.-smoothstep(.75,3.,waterBlur))*
+          (1.-smoothstep(3500.,6000.,dist)));
+      }
+      vec3 bank=groundShadow(world);
+      sunlit*=bank.x*bank.z;
       float fresnel=.020+.98*pow(1.-clamp(dot(-direction,n),0.,1.),5.);
       float glitter=pow(max(dot(reflected,sun),0.),1320.);
-      return mix(vec3(.17,.223,.233),image*vec3(.88,.92,.94),.33+.48*fresnel)+
+      return mix(vec3(.17,.223,.233)*mix(.76,1.,bank.y),image*vec3(.88,.92,.94),.33+.48*fresnel)+
         sunlit*glitter*vec3(.59,.36,.18)*(.24+.52*wind);
     }`;
   const fragmentSource=(derivatives?'#extension GL_OES_standard_derivatives : enable\n#define FACE_NORMAL\n':'')+`precision highp float;
@@ -90,12 +151,55 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     uniform sampler2D terrainMap,fujiMap,sunMask,canopyMap;
     uniform float cloudTime;
     uniform vec3 fujiUV;
+    uniform vec2 depthOrigin,depthSize,depthRange;
+    uniform bool captureShore,hasObjectDepth;
     ${waterAndSky}
+    float objectShadow(vec3 p){
+      if(!hasObjectDepth)return 1.;
+      vec3 u=normalize(cross(vec3(0.,1.,0.),sun)),v=cross(sun,u);
+      vec2 texel=(vec2(dot(p,u),dot(p,v))-depthOrigin)/(shadowStep*.5);
+      if(any(lessThan(texel,vec2(1.))) || any(greaterThan(texel,depthSize-1.)))return 1.;
+      float distance=depthRange.x-dot(p,sun);
+      vec2 cell=floor(texel-.5),f=fract(texel-.5);
+      float visibility=0.;
+      for(int y=0;y<2;y++)for(int x=0;x<2;x++){
+        vec2 offset=vec2(float(x),float(y));
+        vec2 uv=(vec2(1440.,1024.)+cell+offset+.5)/chartSize;
+        vec2 bytes=texture2D(shadowAtlas,uv).rg;
+        float depth=dot(bytes,vec2(65280.,255.))*depthRange.y/65535.;
+        vec2 weights=mix(1.-f,f,offset);
+        visibility+=weights.x*weights.y*(1.-smoothstep(2.,8.,distance-depth));
+      }
+      return visibility;
+    }
     // The original mid-slope bank and its detached neighbours share the same
     // wind and filament profile. Coordinates and terrain hits are in metres.
     float cloudFootprint(vec2 point,vec2 center,vec2 radii){
       vec2 q=(point-center)/radii;
       return smoothstep(.01,.55,1.-dot(q,q));
+    }
+    vec3 cloudBanks(vec2 q){
+      float waist=cloudFootprint(q,vec2(12600.,-1100.),vec2(2940.,5600.));
+      float shoulder=max(cloudFootprint(q,vec2(13050.,5590.),vec2(1870.,1820.)),
+        .71*cloudFootprint(q,vec2(13700.,10350.),vec2(1320.,1380.)));
+      float aloft=max(cloudFootprint(q,vec2(14400.,8200.),vec2(1170.,2200.)),
+        .75*cloudFootprint(q,vec2(13900.,13100.),vec2(1250.,1290.)));
+      return vec3(waist,shoulder,aloft);
+    }
+    float cloudSun(vec3 p){
+      if(p.x<2200. || p.x>16000. || p.y>2100.)return 1.;
+      vec2 wind=vec2(170.*sin(cloudTime*.016),250.*sin(cloudTime*.021));
+      float opticalDepth=0.;
+      for(int i=0;i<3;i++){
+        float altitude=i==0?1080.:(i==1?1192.:1825.);
+        float t=(altitude-p.y)/sun.y;
+        if(t<=0.)continue;
+        vec2 q=p.xz+t*sun.xz;
+        vec3 banks=cloudBanks(q);
+        float cover=i==0?banks.x:(i==1?banks.y:banks.z);
+        if(cover>.001)opticalDepth+=cover*smoothstep(.28,.74,noise((q-wind)*.00072));
+      }
+      return exp(-.36*opticalDepth);
     }
     vec4 mountainCloud(vec3 ray,float distance){
       if(ray.x<.53)return vec4(0.);
@@ -116,15 +220,8 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
       for(int i=0;i<24;i++){
         vec3 p=eye+ray*(first+(float(i)+.5)*dt);
         vec2 q=p.xz;
-        float waist=cloudFootprint(q,vec2(12600.,-1100.),vec2(2940.,5600.))*summitClearance;
-        float shoulder=0.,aloft=0.;
-        if(slope.y>.19){
-          shoulder=cloudFootprint(q,vec2(13050.,5590.),vec2(1870.,1820.));
-          shoulder=max(shoulder,.71*cloudFootprint(q,vec2(13700.,10350.),vec2(1320.,1380.)));
-          aloft=cloudFootprint(q,vec2(14400.,8200.),vec2(1170.,2200.));
-          aloft=max(aloft,.75*cloudFootprint(q,vec2(13900.,13100.),vec2(1250.,1290.)));
-        }
-        if(max(waist,max(shoulder,aloft))<.002)continue;
+        vec3 banks=cloudBanks(q)*vec3(summitClearance,vec2(step(.19,slope.y)));
+        if(max(banks.x,max(banks.y,banks.z))<.002)continue;
         float broad=noise((q-wind)*.00072);
         float eddy=noise(vec2(q.y*.002+q.x*.00024,p.y*.0043+q.x*.00016)+eddyPhase);
         float filaments=noise(vec2(q.y*.0041+q.x*.00042,p.y*.012-q.x*.00055)+filamentPhase);
@@ -139,9 +236,12 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
         vec3 thickness=(121.+177.*broad)*vec3(1.,.88,1.08);
         vec3 vertical=(vec3(p.y)-heights)/thickness;
         vec3 layer=1.-smoothstep(vec3(.10),vec3(1.),abs(vertical));
-        vec3 depth=vec3(waist,shoulder,aloft)*layer*(textureDensity*dt*.00130);
+        vec3 depth=banks*layer*(textureDensity*dt*.00130);
         tau+=dot(depth,vec3(1.));
-        lightSum+=dot(depth,vec3(.55+.13*filaments)+.30*vertical);
+        vec2 litSide=q+sun.xz*290.;
+        vec3 litLayer=1.-smoothstep(vec3(.10),vec3(1.),abs(vertical+290.*sun.y/thickness));
+        float occlusion=dot(cloudBanks(litSide),litLayer)*noise((litSide-wind)*.00072);
+        lightSum+=dot(depth,vec3(.69+.13*filaments-.36*occlusion)+.30*vertical);
       }
       float alpha=1.-exp(-tau);
       vec3 color=mix(vec3(.65,.64,.68),vec3(.96,.86,.74),clamp(lightSum/max(tau,.001),0.,1.));
@@ -182,6 +282,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
       float dist=length(ray);
       vec3 direction=ray/max(dist,.001);
       bool isSky=kind>3.5 && kind<4.5;
+      if(captureShore && (isSky || dist>5500.))discard;
       if(mirror>.5 && world.y<waterHeight-.02 && !isSky)discard;
       vec4 leaves=vec4(1.);
       if(kind>7.5){leaves=texture2D(canopyMap,canopyUV);if(leaves.a<.36)discard;}
@@ -192,15 +293,20 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
       }
       float edge=min(min(landUV.x,landUV.y),min(1.-landUV.x,1.-landUV.y));
       float coverage=smoothstep(.002,.035,edge);
-      float sunlit=mix(1.,texture2D(sunMask,landUV).r,coverage);
-      float toward=pow(max(dot(direction,sun),0.),7.);
-      vec3 haze=mix(vec3(.445,.505,.578),vec3(.755,.665,.568),toward);
-      vec3 result;
+      vec2 regional=texture2D(shadowAtlas,clamp(world.xz/(shadowStep*8.)+720.,.5,1439.5)/chartSize).rg;
+      float sunlit=mix(regional.x,texture2D(sunMask,landUV).r,coverage);
       if(kind>2.5 && kind<3.5){
         if(maskWater>.5)gl_FragColor=mist;
         else gl_FragColor=vec4(mist.rgb+(1.-mist.a)*lakeWater(world,direction,dist,sunlit),1.);
         return;
-      }else if(kind<1.5){
+      }
+      vec3 bank=groundShadow(world);
+      float cloudLight=cloudSun(world);
+      sunlit=min(sunlit,bank.z)*cloudLight;
+      float toward=pow(max(dot(direction,sun),0.),7.);
+      vec3 haze=mix(vec3(.445,.505,.578),vec3(.755,.665,.568),toward);
+      vec3 result;
+      if(kind<1.5){
         vec3 fallback=color*vec3(.94,.77,.74);
         vec3 base=texture2D(terrainMap,vec2(.5*clamp(landUV.x,.001,.999),landUV.y)).rgb;
         vec2 inset=(landUV-vec2(.40625,.15625))*8.;
@@ -225,9 +331,12 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
           foliage*=(.58+.63*crowns+.42*surround)*mix(vec3(.77,.83,.87),vec3(1.12,1.01,.87),sunlit);
           base=mix(base,foliage,woods*mix(.83,.97,smoothstep(12.,38.,rise)));
         }
-        result=mix(fallback,base,coverage);
+        result=mix(fallback*mix(.66,1.,regional.x),base,coverage)*mix(.72,1.,cloudLight)*
+          mix(.69,1.,bank.x*bank.z)*mix(.69,1.,bank.y)*mix(.86,1.,regional.y);
       }else if(kind>7.5){
-        result=leaves.rgb*color*mix(vec3(.65,.70,.81),vec3(1.07,.98,.90),sunlit);
+        float crownHeight=1.-fract(canopyUV.y*2.);
+        float shelter=mix(bank.y,1.,smoothstep(.12,.82,crownHeight));
+        result=leaves.rgb*color*mix(vec3(.65,.70,.81),vec3(1.07,.98,.90),sunlit*objectShadow(world))*mix(.72,1.,shelter);
       }else{
         vec3 n=vec3(0.,1.,0.);
         #ifdef FACE_NORMAL
@@ -235,7 +344,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
           n=face/max(.000001,length(face));
           if(dot(n,-direction)<0.)n=-n;
         #endif
-        float diffuse=max(dot(n,sun),0.)*sunlit;
+        float diffuse=max(dot(n,sun),0.)*sunlit*objectShadow(world);
         vec3 base=color;
         if(kind>5.5){
           float along=dot(vec2(n.z,-n.x),world.xz);
@@ -248,7 +357,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
           if(room>.94)glass=vec3(.85,.66,.41);
           base=mix(base,glass,pane*(.81-smoothstep(350.,1950.,dist)*.54));
         }
-        result=base*sqrt(vec3(.37,.45,.60)+diffuse*vec3(1.34,.88,.48));
+        result=base*sqrt(vec3(.37,.45,.60)*mix(.77,1.,bank.y)+diffuse*vec3(1.34,.88,.48));
       }
       // The aerosol layer thins with height. Integrate density along the ray to
       // the surface so a summit above the layer retains its snow and rock relief.
@@ -259,6 +368,12 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
       float basinPath=1350.*(1.-exp(-dist/1350.));
       float transmission=exp(-.000029*dist-(.000078*dist+.000171*basinPath)*column);
       result=mix(haze,result,transmission);
+      if(captureShore){
+        float code=floor(min(1.,log2(1.+1./gl_FragCoord.w)/17.)*4094.+.5);
+        vec2 bytes=floor(clamp(result.rg,0.,1.)*255./4.)*4.;
+        gl_FragColor=vec4((bytes+vec2(mod(floor(code/4.),4.),mod(code,4.)))/255.,result.b,floor(code/16.)/255.);
+        return;
+      }
       gl_FragColor=vec4(mist.rgb+(1.-mist.a)*result,1.);
     }`;
   function compile(type, source) {
@@ -340,8 +455,12 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
   const corner=gl.getAttribLocation(composite,'corner');
   const uniforms=Object.fromEntries(['stillScene','sunMask','reflectionMap','skyMap','sun','waterHeight',
-    'resolution','hasMirror','waterTime','waterBlur','eye','forward','right','up','tileOrigin'].map(n=>[n,gl.getUniformLocation(composite,n)]));
+    'resolution','hasMirror','waterTime','waterBlur','eye','forward','right','up','tileOrigin',
+    'shadowAtlas','shadowStep','shoreScene','shoreProjection','shoreSize','traceWater'].map(n=>[n,gl.getUniformLocation(composite,n)]));
+  const chart=light.shadowChart;
   gl.useProgram(composite);
+  gl.uniform1i(uniforms.shadowAtlas,3);gl.uniform1i(uniforms.shoreScene,2);
+  gl.uniform1f(uniforms.shadowStep,chart.step);
   gl.uniform1i(uniforms.stillScene,0);gl.uniform1i(uniforms.reflectionMap,5);
   gl.uniform1i(uniforms.sunMask,6);gl.uniform1i(uniforms.skyMap,7);
   gl.uniform3fv(uniforms.sun,light.sun);gl.uniform2fv(uniforms.tileOrigin,light.origin);
@@ -353,6 +472,14 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   gl.useProgram(program);
   const loc=name=>gl.getUniformLocation(program,name);
+  const captureUniform=loc('captureShore'),traceUniform=loc('traceWater');
+  const shoreSizeUniform=loc('shoreSize'),shoreProjectionUniform=loc('shoreProjection');
+  gl.uniform1i(loc('shoreScene'),2);
+  gl.uniform1f(loc('shadowStep'),chart.step);
+  gl.uniform2fv(loc('depthOrigin'),chart.depthOrigin);gl.uniform2fv(loc('depthSize'),chart.depthSize);
+  gl.uniform2fv(loc('depthRange'),chart.depthRange);
+  gl.uniform1i(loc('hasObjectDepth'),gl.getParameter(gl.MAX_TEXTURE_SIZE)>=3072);
+  let textureRevision=0;
   const mirrorUniform=loc('mirror'),reflectionUniform=loc('hasMirror'),sizeUniform=loc('resolution');
   const maskUniform=loc('maskWater'),timeUniform=loc('waterTime'),waterBlurUniform=loc('waterBlur'),cloudUniform=loc('cloudTime');
   gl.uniform2fv(loc('tileOrigin'),light.origin);
@@ -387,12 +514,14 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
         pixels.getContext('2d').drawImage(image,0,0,pixels.width,pixels.height);
       }
       gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
-      gl.generateMipmap(gl.TEXTURE_2D);
-      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+      if(name!=='shadowAtlas'){
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+      }
       const ext=gl.getExtension('EXT_texture_filter_anisotropic');
-      if(ext)gl.texParameterf(gl.TEXTURE_2D,ext.TEXTURE_MAX_ANISOTROPY_EXT,Math.min(8,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+      if(ext && name!=='shadowAtlas')gl.texParameterf(gl.TEXTURE_2D,ext.TEXTURE_MAX_ANISOTROPY_EXT,Math.min(8,gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
       gl.bindTexture(gl.TEXTURE_2D,previous);gl.activeTexture(gl.TEXTURE0);
-      studioLoading.done(name);requestRender();
+      textureRevision++;studioLoading.done(name);requestRender();
     };
     image.onerror=()=>{studioLoading.done(name);requestRender();};
     image.src=url;
@@ -404,6 +533,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
   const summitTexture=loadMap('fujiMap',light.fuji,1,[104,111,125]);
   gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,roomShadow);gl.activeTexture(gl.TEXTURE0);
   const leavesTexture=loadMap('canopyMap',light.canopy,4,[80,72,53]);
+  const shadowAtlas=loadMap('shadowAtlas',light.shadows,3,[255,255,255]);
   const sunTexture=loadMap('sunMask',light.visibility,6,[255,255,255]);
   const skyTexture=loadMap('skyMap',light.sky,7,[174,175,182],true);
   const target=gl.createFramebuffer(),reflected=gl.createTexture(),depth=gl.createRenderbuffer();
@@ -438,6 +568,46 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     const top=Math.ceil((1+Math.max(...rects.map(r=>r[3])))*h/2);
     gl.scissor(left,bottom,right-left,top-bottom);
   }
+  const shoreTarget=gl.createFramebuffer(),shoreColor=gl.createTexture(),shoreDepthBuffer=gl.createRenderbuffer();
+  let shoreW=0,shoreH=0,shoreReady=false,shoreMatrix=null,shoreRevision=-1;
+  gl.bindTexture(gl.TEXTURE_2D,shoreColor);
+  for(const p of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,p,gl.LINEAR);
+  for(const p of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])gl.texParameteri(gl.TEXTURE_2D,p,gl.CLAMP_TO_EDGE);
+  let waterSSR=false;
+  function captureShore(matrix,eye,w,h){
+    const scale=Math.min(.5,800/Math.max(w,h));
+    const a=Math.max(1,Math.round(w*scale)),b=Math.max(1,Math.round(h*scale));
+    if(a===shoreW && b===shoreH && shoreRevision===textureRevision && shoreMatrix &&
+       matrix.every((x,i)=>x===shoreMatrix[i]))return shoreReady;
+    if(a!==shoreW || b!==shoreH){
+      shoreW=a;shoreH=b;
+      gl.bindTexture(gl.TEXTURE_2D,shoreColor);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,a,b,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+      gl.bindRenderbuffer(gl.RENDERBUFFER,shoreDepthBuffer);
+      gl.renderbufferStorage(gl.RENDERBUFFER,gl.DEPTH_COMPONENT16,a,b);
+      gl.bindFramebuffer(gl.FRAMEBUFFER,shoreTarget);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,shoreColor,0);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.RENDERBUFFER,shoreDepthBuffer);
+      shoreReady=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
+      gl.bindTexture(gl.TEXTURE_2D,landTexture);
+    }else gl.bindFramebuffer(gl.FRAMEBUFFER,shoreTarget);
+    if(shoreReady){
+      gl.viewport(0,0,a,b);gl.disable(gl.SCISSOR_TEST);
+      gl.clearColor(1,1,1,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+      gl.disable(gl.DITHER);
+      gl.uniform1f(mirrorUniform,0);gl.uniform1i(captureUniform,1);
+      gl.uniform3fv(eyeUniform,eye);gl.uniformMatrix4fv(projection,false,matrix);
+      const frustum=studioVisibility.frustum(matrix);
+      studioVisibility.drawRanges(dryChunks,c=>
+        c[2]<eye[0]+5500 && c[5]>eye[0]-5500 && c[4]<eye[2]+5500 && c[7]>eye[2]-5500 &&
+        studioVisibility.intersects(c,frustum),draw);
+      gl.uniform1i(captureUniform,0);gl.enable(gl.DITHER);gl.enable(gl.SCISSOR_TEST);
+      gl.clearColor(.81,.85,.85,1);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,w,h);
+    shoreMatrix=matrix.slice();shoreRevision=textureRevision;
+    return shoreReady;
+  }
   let waveFrame=0,lastWave=0,cachedWidth=0,cachedHeight=0;
   const clockStart=performance.now();
   function cancelWaves(){cancelAnimationFrame(waveFrame);waveFrame=0;}
@@ -451,6 +621,9 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     const visibleWater=wetChunks.filter(visible);
     const animateWater=mayAnimate && visibleWater.length>0;
     gl.useProgram(program);
+    gl.uniform1i(traceUniform,0);
+    gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,landTexture);
+    gl.activeTexture(gl.TEXTURE3);gl.bindTexture(gl.TEXTURE_2D,shadowAtlas);
     gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,summitTexture);
     gl.activeTexture(gl.TEXTURE4);gl.bindTexture(gl.TEXTURE_2D,leavesTexture);
     gl.activeTexture(gl.TEXTURE5);gl.bindTexture(gl.TEXTURE_2D,landTexture);
@@ -467,6 +640,9 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     gl.uniform1f(cloudUniform,cloudTime);
     const showMirror=!offscreenSize && usable && visibleWater.length>0;
     gl.enable(gl.SCISSOR_TEST);
+    if(!offscreenSize){
+      waterSSR=showMirror && waterBlur<3. && captureShore(matrix,eye,w,h);
+    }
     if(showMirror){
       // Reflect the viewpoint and its basis across the horizontal lake, then
       // render the mountains, buildings and sky into a lower-resolution target.
@@ -491,11 +667,18 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     gl.uniform1f(mirrorUniform,0);gl.uniform1f(reflectionUniform,showMirror?1:0);
     gl.uniformMatrix4fv(projection,false,matrix);gl.uniform3fv(eyeUniform,eye);
     studioVisibility.drawRanges(dryChunks,visible,draw);
+    if(!offscreenSize && waterSSR){
+      gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,shoreColor);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.uniform2f(shoreSizeUniform,shoreW,shoreH);
+      gl.uniformMatrix4fv(shoreProjectionUniform,false,matrix);
+      gl.uniform1i(traceUniform,1);
+    }
     studioVisibility.drawRanges(visibleWater,()=>true,draw);
     gl.disable(gl.SCISSOR_TEST);
     gl.bindTexture(gl.TEXTURE_2D,roomAtlas);
     gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,roomShadow);
-    gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,rugMap);
+    restoreMaterials();
     gl.activeTexture(gl.TEXTURE4);gl.bindTexture(gl.TEXTURE_2D,floorMap);gl.activeTexture(gl.TEXTURE0);
     if(state)vao.bindVertexArrayOES(null);
     else attributes.forEach(a=>gl.disableVertexAttribArray(a));
@@ -509,6 +692,11 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
       cachedWidth=w;cachedHeight=h;
     }else gl.copyTexSubImage2D(gl.TEXTURE_2D,0,0,0,0,0,w,h);
     gl.useProgram(composite);
+    gl.uniform1i(uniforms.traceWater,waterSSR?1:0);
+    if(waterSSR){
+      gl.uniformMatrix4fv(uniforms.shoreProjection,false,shoreMatrix);
+      gl.uniform2f(uniforms.shoreSize,shoreW,shoreH);
+    }
     gl.uniform2f(uniforms.resolution,w,h);gl.uniform1f(uniforms.hasMirror,usable?1:0);
     gl.uniform1f(uniforms.waterBlur,waterBlur);
     gl.uniform3fv(uniforms.eye,view.origin);gl.uniform3fv(uniforms.forward,view.forward);
@@ -516,6 +704,8 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
     gl.uniform3fv(uniforms.up,view.up.map(v=>v/view.sy));
     function paint(now){
       gl.useProgram(composite);
+      gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,waterSSR?shoreColor:landTexture);
+      gl.activeTexture(gl.TEXTURE3);gl.bindTexture(gl.TEXTURE_2D,shadowAtlas);
       gl.activeTexture(gl.TEXTURE6);gl.bindTexture(gl.TEXTURE_2D,sunTexture);
       gl.activeTexture(gl.TEXTURE7);gl.bindTexture(gl.TEXTURE_2D,skyTexture);
       gl.activeTexture(gl.TEXTURE0);
@@ -526,6 +716,7 @@ function createLakeLandscape(gl, mesh, light, requestRender) {
       gl.activeTexture(gl.TEXTURE5);gl.bindTexture(gl.TEXTURE_2D,reflected);
       gl.disable(gl.DEPTH_TEST);gl.drawArrays(gl.TRIANGLES,0,3);gl.enable(gl.DEPTH_TEST);
       gl.bindTexture(gl.TEXTURE_2D,landTexture);
+      restoreMaterials();
       gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,roomAtlas);
       lastWave=now;
     }

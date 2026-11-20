@@ -92,7 +92,7 @@ const detail = el('detail');
 const panel = el('indexPanel');
 const stage = el('stage');
 const studioLoading=(()=>{
-  const pending=new Set(['room','terrainMap','fujiMap','canopyMap','sunMask','skyMap','prints','glazing','frame']);
+  const pending=new Set(['room','terrainMap','fujiMap','canopyMap','sunMask','shadowAtlas','skyMap','prints','glazing','frame']);
   const progress=el('studioProgress');
   stage.inert=true;
   function reveal(){

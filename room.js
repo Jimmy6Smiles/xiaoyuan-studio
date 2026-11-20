@@ -1924,7 +1924,7 @@ async function initializeStudioRoom(){
     c[2]-=.020;c[5]+=.020;c[4]-=.014;c[7]+=.014;
   }
   // The sun and both overhead fixtures share one static shadow texture.
-  const illumination=unit(kawaguchiLight.sun);
+  const illumination=unit(kawaguchiLight.roomSun || kawaguchiLight.sun);
   const lightRight=unit(cross([0,1,0],illumination)),lightUp=cross(illumination,lightRight);
   const lightMatrix=[];
   for(let i=0;i<3;i++)lightMatrix.push(lightRight[i]/8.3,lightUp[i]/8.0,-illumination[i]/9.,0);
@@ -2006,7 +2006,10 @@ async function initializeStudioRoom(){
   gl.uniform3fv(gl.getUniformLocation(program,'shadowAxisU'),mult(lightRight,8.3/9.));
   gl.uniform3fv(gl.getUniformLocation(program,'shadowAxisV'),mult(lightUp,8./9.));
   bakeRoomShadows();
-  const {drawLake,finishWater,cancelWaves}=createLakeLandscape(gl,kawaguchiMesh,kawaguchiLight,requestRender);
+  const {drawLake,finishWater,cancelWaves}=createLakeLandscape(gl,kawaguchiMesh,kawaguchiLight,requestRender,()=>{
+    gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,rugMap);
+    gl.activeTexture(gl.TEXTURE3);gl.bindTexture(gl.TEXTURE_2D,metalMap);
+  });
   const windowLens=createWindowFocus(gl,emitters);
   emitters.length=0;
   const drawWindowGlass=createWindowGlazing(gl,requestRender);
@@ -2190,7 +2193,7 @@ async function initializeStudioRoom(){
   if(separateRadiance)gl.uniform1i(gl.getUniformLocation(program,'irradianceMap'),8);
   rug.width=1;
   if(rugImage!==rug)rugImage.width=1;
-  materialTexture('metalFinish',3,makeMetalFinish(),true);
+  const metalMap=materialTexture('metalFinish',3,makeMetalFinish(),true);
   const texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);function upload(){gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,atlas);}
   upload();gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   const source=new Image(), cameraFinish=new Image(), suedePile=new Image(),galleryImage=new Image(),tableImage=new Image();
