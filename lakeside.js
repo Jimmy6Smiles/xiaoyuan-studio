@@ -269,10 +269,10 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
           float edge=min(min(uv.x,uv.y),min(1.-uv.x,1.-uv.y));
           float shore=texture2D(sunMask,uv).g*smoothstep(0.,.04,edge);
           float patch=.70*noise(p.xz*.0028)+.30*noise(vec2(p.z*.009+p.y*.022,p.x*.007));
-          float top=3.5+13.*smoothstep(.32,.77,patch);
+          float top=2.8+8.*smoothstep(.38,.77,patch);
           float above=p.y-waterHeight;
           float layer=smoothstep(-1.,1.4,above)*(1.-smoothstep(2.,top,above));
-          tau+=shore*layer*smoothstep(.35,.77,patch)*smoothstep(170.,480.,length(p.xz))*stepSize*.0044;
+          tau+=shore*layer*smoothstep(.41,.77,patch)*smoothstep(170.,480.,length(p.xz))*stepSize*.0020;
         }
       }
       float shoreAlpha=1.-exp(-tau);
@@ -341,7 +341,12 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
           vec3 foliage=mix(vec3(.117,.137,.114),vec3(.254,.199,.138),smoothstep(.34,.77,stand));
           float surround=clamp(dot(base,vec3(.28,.56,.16)),.05,.65);
           foliage*=(.58+.63*crowns+.42*surround)*pow(ambient+.55*transmission*direct,vec3(1./2.2));
-          base=mix(base,foliage,woods*mix(.83,.97,smoothstep(12.,38.,rise)));
+          // Let fine aerial canopy detail show through the open groves above
+          // the eastern shore, where individual crowns leave visible gaps.
+          vec2 headland=vec2((world.x-755.)/440.,(world.z+600.+.32*(world.x-755.))/184.);
+          float grove=1.-smoothstep(.42,1.,dot(headland,headland));
+          float undergrowth=mix(.83,.97,smoothstep(12.,38.,rise))*(1.-.55*grove);
+          base=mix(base,foliage,woods*undergrowth);
         }
         result=mix(fallback*mix(.66,1.,regional.x),base,coverage)*mix(.69,1.,bank.y)*mix(.86,1.,regional.y)*
           mix(1.,mix(.72,1.,cloudLight),alpine);
@@ -359,6 +364,15 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
         #endif
         float diffuse=clamp(sunGain*dot(n,sun),0.,maxIrradiance)*sunlit*objectShadow(world);
         vec3 base=color;
+        if(kind>4.5 && kind<5.5){
+          // Silt and coarse scree follow the bank in world space, including
+          // its reflected view. The irregular damp margin follows lake level.
+          vec2 p=world.xz+world.y*vec2(.47,-.82);
+          float patch=noise(p*.16);
+          float gravel=noise(p*.89);
+          float damp=1.-smoothstep(.25,1.55,world.y-waterHeight+.85*(patch-.5));
+          base*=mix(.65,1.09,patch)*mix(.78,1.08,gravel)*(1.-.24*damp);
+        }
         if(kind>5.5){
           float along=dot(vec2(n.z,-n.x),world.xz);
           vec2 grid=vec2(along/3.05,world.y/3.15);

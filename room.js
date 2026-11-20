@@ -1856,7 +1856,8 @@ async function initializeStudioRoom(){
   let measureCenter,applyContactBake;
   const fineBuffer=gl.createBuffer();
   let surfaceRows=0;
-  await coordinateReady;
+  // Finish both decodes before landscape texture callbacks can request a frame.
+  await Promise.all([coordinateReady,detailReady]);
   const chunks=(()=>{
     const layout=studioVisibility.roomChunks(vertices,[windowStart,windowEnd,curtainStart,curtainEnd,photosStart,photosEnd,casterCount,solidCount],railMountStart,railMountEnd);
     measureCenter=studioVisibility.centerMeter(layout.packed,layout.chunks,solidCount);
@@ -2061,7 +2062,6 @@ async function initializeStudioRoom(){
     letter('POWER',px(.184),213,12,'#e4d3ad','sans-serif');
     rule(3,9,509,9,'#bca273',2);rule(3,243,509,243,'#bca273',2);
   });
-  await detailReady;
   const detailSheet=detailImage.naturalWidth===detailSize && detailImage.naturalHeight===detailSize?detailImage:null;
   const deskGraphics=createProjectDeskGraphics(gl,program,studioProjects,selectedProject,detailSheet);
   gl.uniform1i(gl.getUniformLocation(program,'hasDetailShadows'),detailSheet?1:0);
