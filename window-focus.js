@@ -1,12 +1,3 @@
-// The same meniscus and small surface variations drive the fallback and screen trace.
-const developerOpticsGLSL=`const vec3 developerLampFace=vec3(-4.29,2.51,-3.86);
-float developerLampCoverage(vec3 p){
-  return 1.-smoothstep(.155,.173,length(p.xz-developerLampFace.xz));
-}
-vec3 developerNormal(vec3 p,vec3 n){
-  return normalize(normalize(n)+vec3(.0045*sin(p.x*83.+p.z*31.),0.,.003*sin(p.z*104.-p.x*23.)));
-}`;
-
 // Composite the interior at the current optical power, keeping exterior pixels
 // separate so defocused window bars can spread over the lake.
 function createWindowFocus(gl,emitters){
@@ -290,112 +281,6 @@ function createWindowFocus(gl,emitters){
     gl.disable(gl.BLEND);gl.enable(gl.DEPTH_TEST);
     gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,roomAtlas);
   }
-  function createDeveloperPass(){
-    const shader=link(`attribute vec3 point,normal;uniform mat4 camera;
-      varying vec3 world,n;
-      void main(){world=point;n=normal;gl_Position=camera*vec4(point,1.);}`,
-      `precision highp float;
-      varying vec3 world,n;
-      uniform mat4 camera;
-      uniform vec3 eye;
-      uniform sampler2D sceneColor,sceneDepth;
-      uniform vec2 targetPixel;
-      ${developerOpticsGLSL}
-      float depthAt(vec2 uv){return .04004/(1.001-texture2D(sceneDepth,uv).r);}
-      vec2 projectUV(vec4 clip){return .5+.5*clip.xy/clip.w;}
-      void main(){
-        gl_FragColor=vec4(0.);
-        vec4 surface=camera*vec4(world,1.);
-        vec2 uv=projectUV(surface);
-        if(surface.w>depthAt(uv)+.001)return;
-        vec3 normal=developerNormal(world,n);
-        vec3 ray=reflect(normalize(world-eye),normal);
-        if(ray.y<=.002)return;
-        // Start close enough to resolve the 24 mm of visible inner wall above the liquid.
-        vec3 origin=world+.00045*normal;
-        vec4 start=camera*vec4(origin,1.),delta=camera*vec4(ray,0.);
-        // A thin diffuser seen edge-on can fall between depth samples. Its
-        // known plane gives an exact screen lookup, checked against opaque depth.
-        float lampT=(developerLampFace.y-origin.y)/ray.y;
-        float disc=developerLampCoverage(origin+lampT*ray);
-        vec4 bulb=vec4(0.);
-        if(disc>0.){
-          vec4 lampClip=start+lampT*delta;
-          if(lampClip.w>.04){
-            vec2 lampUV=projectUV(lampClip);
-            vec2 edge=min(lampUV,1.-lampUV);
-            float coverage=disc*smoothstep(0.,.021,min(edge.x,edge.y));
-            if(coverage>0.){
-              coverage*=1.-smoothstep(.004,.016,abs(depthAt(lampUV)-lampClip.w));
-              bulb=vec4(texture2D(sceneColor,lampUV).rgb*coverage,coverage);
-              gl_FragColor=bulb;
-            }
-          }
-        }
-        float previous=0.,travel=.001,stepSize=.0015;
-        for(int i=0;i<39;i++){
-          vec4 clip=start+travel*delta;
-          if(clip.w<.04)return;
-          vec2 at=projectUV(clip);
-          if(any(lessThanEqual(at,vec2(0.))) || any(greaterThanEqual(at,vec2(1.))))return;
-          if(clip.w>=depthAt(at)){
-            float lo=previous,hi=travel;
-            for(int j=0;j<6;j++){
-              float mid=.5*(lo+hi);
-              vec4 test=start+mid*delta;
-              if(test.w>=depthAt(projectUV(test)))hi=mid;else lo=mid;
-            }
-            clip=start+hi*delta;at=projectUV(clip);
-            float z=depthAt(at),error=abs(clip.w-z);
-            float hitY=eye.y+(origin.y+hi*ray.y-eye.y)*z/clip.w;
-            float confidence=(1.-smoothstep(.0015,.0035+.0015*z,error))
-              *smoothstep(world.y+.00015,world.y+.0014,hitY);
-            vec2 edge=min(at,1.-at);
-            confidence*=smoothstep(0.,.021,min(edge.x,edge.y));
-            // Fade silhouettes at the edge of the reflection target as well.
-            vec2 margin=min(uv,1.-uv)/targetPixel;
-            confidence*=smoothstep(.5,2.,min(margin.x,margin.y));
-            if(hi>lampT+.007 && bulb.a>.99)return;
-            gl_FragColor=bulb*(1.-confidence)+vec4(texture2D(sceneColor,at).rgb*confidence,confidence);
-            return;
-          }
-          previous=travel;travel+=stepSize;stepSize=min(.34,stepSize*1.21);
-        }
-      }`);
-    return {shader,map:texture(gl.LINEAR),frame:gl.createFramebuffer(),w:0,h:0,ready:false,
-      point:gl.getAttribLocation(shader,'point'),normal:gl.getAttribLocation(shader,'normal'),
-      uniforms:Object.fromEntries(['camera','eye','sceneColor','sceneDepth','targetPixel'].map(n=>[n,gl.getUniformLocation(shader,n)]))};
-  }
-  let developerPass;
-  // Trace only the visible liquid triangles, before transparency and depth of field.
-  // A separate colour target keeps both opaque scene textures available for reading.
-  function reflectDeveloper(groups,matrix,eye,mesh,draw){
-    if(!useDepth || !groups.length)return null;
-    const pass=developerPass || (developerPass=createDeveloperPass());
-    const scale=Math.min(.75,1440/Math.max(width,height));
-    const w=Math.max(1,Math.round(width*scale)),h=Math.max(1,Math.round(height*scale));
-    gl.activeTexture(gl.TEXTURE0);
-    if(w!==pass.w || h!==pass.h){
-      target(pass.frame,pass.map,w,h);pass.w=w;pass.h=h;
-      pass.ready=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
-    }
-    if(pass.ready){
-      gl.bindFramebuffer(gl.FRAMEBUFFER,pass.frame);gl.viewport(0,0,w,h);
-      gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);gl.clearColor(.81,.85,.85,1);
-      gl.disable(gl.DEPTH_TEST);gl.useProgram(pass.shader);
-      gl.bindTexture(gl.TEXTURE_2D,color);gl.uniform1i(pass.uniforms.sceneColor,0);
-      gl.activeTexture(gl.TEXTURE5);gl.bindTexture(gl.TEXTURE_2D,depth);gl.uniform1i(pass.uniforms.sceneDepth,5);
-      gl.uniformMatrix4fv(pass.uniforms.camera,false,matrix);gl.uniform3fv(pass.uniforms.eye,eye);
-      gl.uniform2f(pass.uniforms.targetPixel,1/w,1/h);gl.bindBuffer(gl.ARRAY_BUFFER,mesh);
-      gl.enableVertexAttribArray(pass.point);gl.vertexAttribPointer(pass.point,3,gl.FLOAT,false,48,0);
-      gl.enableVertexAttribArray(pass.normal);gl.vertexAttribPointer(pass.normal,3,gl.FLOAT,false,48,12);
-      for(const g of groups)draw(g.first,g.count);
-      gl.enable(gl.DEPTH_TEST);
-    }
-    gl.bindFramebuffer(gl.FRAMEBUFFER,frame);gl.viewport(0,0,width,height);
-    gl.activeTexture(gl.TEXTURE0);
-    return pass.ready?pass.map:null;
-  }
   // The five elements share one view from the visitor's eye. Turning in
   // place cannot clip its contents at the edge of the visible canvas.
   function createRailBackground(){
@@ -429,5 +314,5 @@ function createWindowFocus(gl,emitters){
     gl.bindFramebuffer(gl.FRAMEBUFFER,frame);gl.viewport(0,0,width,height);
     return rail && rail.map;
   }
-  return {begin,finish,apertureScale,filterLighting,reflectDeveloper,refractRail,supportsReflections:!!depthExtension};
+  return {begin,finish,apertureScale,filterLighting,refractRail,supportsReflections:!!depthExtension};
 }

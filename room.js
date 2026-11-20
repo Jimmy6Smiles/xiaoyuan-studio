@@ -100,7 +100,6 @@ async function initializeStudioRoom(){
   varying vec3 fineLightUV;
   uniform vec4 printCenters;
   uniform vec4 railTile;
-  uniform vec2 developerPixel;
   uniform vec3 overhead[2],profileLamps[2],profileAxes[2];
   uniform sampler2D atlas, shadowDepth, runnerMap, metalFinish, roomSurfaces;
   uniform sampler2D cardInk, fromScreen, toScreen;
@@ -389,7 +388,6 @@ async function initializeStudioRoom(){
     float d=max(0.,distanceFromEdge)/(radius+.008*reach);
     return smoothstep(.025,.40,facing)*(.16*exp(-3.3*d)+.062*exp(-.92*d*d));
   }
-  ${developerOpticsGLSL}
   void main(){
     vec3 n=normalize(norm),base=col;
     if(mat>6.5 && mat<7.5){
@@ -465,27 +463,20 @@ async function initializeStudioRoom(){
       // reflects a different part of the room as the viewer moves.
       vec3 view=normalize(eyePoint-pos);
       float edge=length(n.xz);
-      n=developerNormal(pos,n);
+      n=normalize(n+vec3(.013*sin(pos.x*83.+pos.z*31.),0.,.009*sin(pos.z*104.-pos.x*23.)));
       vec3 ray=reflect(-view,n);
       float fresnel=.021+.979*pow(1.-clamp(dot(n,view),0.,1.),5.);
       vec3 ceilingHit=pos+ray*((3.07-pos.y)/max(.01,ray.y));
       float ceiling=smoothstep(-4.88,-4.74,ceilingHit.z)*(1.-smoothstep(-3.04,-2.90,ceilingHit.z));
-      vec3 toLamp=developerLampFace-pos;
-      float lamp=developerLampCoverage(pos+ray*(toLamp.y/max(.001,ray.y)))*step(.001,ray.y);
+      vec3 toLamp=vec3(-4.29,2.51,-3.86)-pos;
+      float miss=length(cross(ray,toLamp));
+      float lamp=(1.-smoothstep(.11,.23,miss))*step(0.,dot(ray,toLamp));
       vec3 tint=mix(vec3(1.,.27,.13),vec3(1.,.99,.97),darkroomWhite);
       float wetEdge=smoothstep(.04,.44,edge);
       float wallLight=.5+.5*dot(n.xz,normalize(toLamp.xz))/max(.001,edge);
       float reflectedLight=mix(mix(.24,.69,ceiling),mix(.12,.95,wallLight),wetEdge);
       vec3 reflection=tint*mix(reflectedLight,1.,lamp);
-      if(developerPixel.x>0.){
-        vec4 hit=texture2D(atlas,gl_FragCoord.xy*developerPixel);
-        // RGB is premultiplied by confidence. Screen edges hand back to the
-        // lamp and ceiling smoothly, and an intervening rim can hide the lamp.
-        reflection=reflection*(1.-hit.a)+hit.rgb;
-        float peak=max(hit.r,max(hit.g,hit.b))/max(.001,hit.a);
-        lamp*=mix(1.,smoothstep(.55,.93,peak),hit.a);
-      }
-      gl_FragColor=vec4(reflection,clamp(.035+fresnel+.28*wetEdge+.13*lamp,0.,.68));
+      gl_FragColor=vec4(reflection,clamp(.035+fresnel+.28*wetEdge+.21*lamp,0.,.68));
       return;
     }
     if(mat>14.5 && mat<15.5){
@@ -1816,7 +1807,6 @@ async function initializeStudioRoom(){
       smoothQuad([wetEdge[j],wetEdge[k],flat[k],flat[j]],[wetNormals[j],wetNormals[k],up,up],[1,1,1],30);
     }
     registerTransparent(first);
-    transparentGroups[transparentGroups.length-1].developer=true;
   }
   opticalCenters.forEach((center,i)=>{
     const first=vertices.length/12,{radius,sag}=railOptics;
@@ -2351,7 +2341,6 @@ async function initializeStudioRoom(){
   const fastShadowsUniform=gl.getUniformLocation(program,'fastShadows');
   const projectionUniform=gl.getUniformLocation(program,'projectionReveal');
   const railTileUniform=gl.getUniformLocation(program,'railTile');
-  const developerPixelUniform=gl.getUniformLocation(program,'developerPixel');
   const projectionTimeUniform=gl.getUniformLocation(program,'projectionTime');
   const linkFrameUniform=gl.getUniformLocation(program,'linkFrame');
   let darkroomTarget=0,darkroomFrom=0,lightSwitchTime=0;
@@ -2975,19 +2964,8 @@ async function initializeStudioRoom(){
         gl.uniform1i(fastShadowsUniform,fastSampling?1:0);
         studioVisibility.drawRanges(mounts,inView,drawRoom);
       }
-      const liquids=insideDarkroom && blurInterior && windowLens.supportsReflections?visible.filter(g=>g.developer):[];
-      let developerMap=null;
-      if(liquids.length){
-        developerMap=windowLens.reflectDeveloper(liquids,mat,eye,buffer,drawRoom);
-        bindRoom();deskGraphics.bind();gl.bindTexture(gl.TEXTURE_2D,texture);
-      }
-      gl.uniform2f(developerPixelUniform,developerMap?1/w:0,developerMap?1/h:0);
       gl.enable(gl.BLEND);gl.blendFuncSeparate(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA,gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
       for(const g of visible){
-        if(g.developer && developerMap){
-          gl.bindTexture(gl.TEXTURE_2D,developerMap);drawRoom(g.first,g.count);
-          gl.bindTexture(gl.TEXTURE_2D,texture);continue;
-        }
         if(g.lens===undefined){drawRoom(g.first,g.count);continue;}
         if(glass && g.tile){
           gl.bindTexture(gl.TEXTURE_2D,glass);gl.uniform4fv(railTileUniform,g.tile);
