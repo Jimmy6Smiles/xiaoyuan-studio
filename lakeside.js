@@ -42,6 +42,9 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
     uniform bool traceWater;
     const float pi=3.14159265;
     const vec2 chartSize=vec2(3072.,1536.);
+    const vec3 sunlightRGB=vec3(${light.sunRGB.map(v=>v.toFixed(3)).join(',')});
+    const float maxIrradiance=${light.maxIrradiance.toFixed(2)};
+    const float sunGain=${light.sunGain.toFixed(2)};
     vec3 groundShadow(vec3 p){
       vec2 chart=p.xz/shadowStep+512.;
       vec2 edge=min(chart,1024.-chart);
@@ -138,7 +141,7 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
       float fresnel=.020+.98*pow(1.-clamp(dot(-direction,n),0.,1.),5.);
       float glitter=pow(max(dot(reflected,sun),0.),1320.);
       return mix(vec3(.17,.223,.233)*mix(.76,1.,bank.y),image*vec3(.88,.92,.94),.33+.48*fresnel)+
-        sunlit*glitter*vec3(.59,.36,.18)*(.24+.52*wind);
+        sunlit*glitter*(.25*pow(sunlightRGB,vec3(1./2.2)))*(.24+.52*wind);
     }`;
   const fragmentSource=(derivatives?'#extension GL_OES_standard_derivatives : enable\n#define FACE_NORMAL\n':'')+`precision highp float;
     varying vec3 world,color;
@@ -285,7 +288,8 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
       if(captureShore && (isSky || dist>5500.))discard;
       if(mirror>.5 && world.y<waterHeight-.02 && !isSky)discard;
       vec4 leaves=vec4(1.);
-      if(kind>7.5){leaves=texture2D(canopyMap,canopyUV);if(leaves.a<.36)discard;}
+      vec2 crownUV=canopyUV*vec2(.5,1.);
+      if(kind>7.5){leaves=texture2D(canopyMap,crownUV);if(leaves.a<.36)discard;}
       vec4 mist=mistAlong(direction,dist);
       if(isSky){
         gl_FragColor=vec4(mist.rgb+(1.-mist.a)*sky(direction),1.);
@@ -294,7 +298,8 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
       float edge=min(min(landUV.x,landUV.y),min(1.-landUV.x,1.-landUV.y));
       float coverage=smoothstep(.002,.035,edge);
       vec2 regional=texture2D(shadowAtlas,clamp(world.xz/(shadowStep*8.)+720.,.5,1439.5)/chartSize).rg;
-      float sunlit=mix(regional.x,texture2D(sunMask,landUV).r,coverage);
+      vec3 terrainSun=texture2D(sunMask,landUV).rgb;
+      float sunlit=mix(regional.x,terrainSun.r,coverage);
       if(kind>2.5 && kind<3.5){
         if(maskWater>.5)gl_FragColor=mist;
         else gl_FragColor=vec4(mist.rgb+(1.-mist.a)*lakeWater(world,direction,dist,sunlit),1.);
@@ -313,11 +318,18 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
         float border=min(min(inset.x,inset.y),min(1.-inset.x,1.-inset.y));
         vec2 crop=vec2(.5+.5*clamp(inset.x,.001,.999),clamp(inset.y,.001,.999));
         base=mix(base,texture2D(terrainMap,crop).rgb,smoothstep(.006,.052,border));
+        base*=${light.landRange.toFixed(2)};
+        // The photograph already includes terrain self-shadow. Remove only
+        // the direct component where a nearer object, ridge or cloud blocks it.
+        vec3 ambient=vec3(.44,.51,.66);
+        vec3 direct=terrainSun.b*maxIrradiance*sunlightRGB;
+        float transmission=bank.x*bank.z*cloudLight;
+        base*=pow((ambient+transmission*direct)/(ambient+direct),vec3(1./2.2));
         // Register the native DEM/orthophoto inset with the regional material.
         vec2 summit=(landUV-fujiUV.xy)*fujiUV.z;
         float rim=min(min(summit.x,summit.y),min(1.-summit.x,1.-summit.y));
         float alpine=smoothstep(1230.,1620.,world.y)*smoothstep(.004,.085,rim);
-        base=mix(base,texture2D(fujiMap,clamp(summit,0.,1.)).rgb,alpine);
+        base=mix(base,texture2D(fujiMap,clamp(summit,0.,1.)).rgb*${Number(light.summitRange || 1).toFixed(2)},alpine);
         // A dark understory connects the visible crowns on the shore and headlands.
         // Sample in metres along the hillside so steep faces do not stretch the grain.
         float rise=world.y-waterHeight;
@@ -328,15 +340,16 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
           float crowns=.72*noise(p*.11)+.28*noise(p*.33);
           vec3 foliage=mix(vec3(.117,.137,.114),vec3(.254,.199,.138),smoothstep(.34,.77,stand));
           float surround=clamp(dot(base,vec3(.28,.56,.16)),.05,.65);
-          foliage*=(.58+.63*crowns+.42*surround)*mix(vec3(.77,.83,.87),vec3(1.12,1.01,.87),sunlit);
+          foliage*=(.58+.63*crowns+.42*surround)*pow(ambient+.55*transmission*direct,vec3(1./2.2));
           base=mix(base,foliage,woods*mix(.83,.97,smoothstep(12.,38.,rise)));
         }
-        result=mix(fallback*mix(.66,1.,regional.x),base,coverage)*mix(.72,1.,cloudLight)*
-          mix(.69,1.,bank.x*bank.z)*mix(.69,1.,bank.y)*mix(.86,1.,regional.y);
+        result=mix(fallback*mix(.66,1.,regional.x),base,coverage)*mix(.69,1.,bank.y)*mix(.86,1.,regional.y)*
+          mix(1.,mix(.72,1.,cloudLight),alpine);
       }else if(kind>7.5){
         float crownHeight=1.-fract(canopyUV.y*2.);
         float shelter=mix(bank.y,1.,smoothstep(.12,.82,crownHeight));
-        result=leaves.rgb*color*mix(vec3(.65,.70,.81),vec3(1.07,.98,.90),sunlit*objectShadow(world))*mix(.72,1.,shelter);
+        vec3 litLeaves=texture2D(canopyMap,crownUV+vec2(.5,0.)).rgb;
+        result=mix(leaves.rgb,litLeaves,sunlit*objectShadow(world))*color*mix(.72,1.,shelter);
       }else{
         vec3 n=vec3(0.,1.,0.);
         #ifdef FACE_NORMAL
@@ -344,7 +357,7 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
           n=face/max(.000001,length(face));
           if(dot(n,-direction)<0.)n=-n;
         #endif
-        float diffuse=max(dot(n,sun),0.)*sunlit*objectShadow(world);
+        float diffuse=clamp(sunGain*dot(n,sun),0.,maxIrradiance)*sunlit*objectShadow(world);
         vec3 base=color;
         if(kind>5.5){
           float along=dot(vec2(n.z,-n.x),world.xz);
@@ -357,7 +370,7 @@ function createLakeLandscape(gl, mesh, light, requestRender,restoreMaterials) {
           if(room>.94)glass=vec3(.85,.66,.41);
           base=mix(base,glass,pane*(.81-smoothstep(350.,1950.,dist)*.54));
         }
-        result=base*sqrt(vec3(.37,.45,.60)*mix(.77,1.,bank.y)+diffuse*vec3(1.34,.88,.48));
+        result=base*pow(vec3(.37,.45,.60)*mix(.77,1.,bank.y)+diffuse*sunlightRGB,vec3(1./2.2));
       }
       // The aerosol layer thins with height. Integrate density along the ray to
       // the surface so a summit above the layer retains its snow and rock relief.
