@@ -30,6 +30,7 @@ async function initializeStudioRoom(){
     pos=p; norm=n; col=c; tex=uv; mat=mod(code,32.);
     if(code>=1024.){
       mat=code-1024.;
+      if(code==1024. || code==1030.)fineLightUV.z=0.; // Loose paper samples the room light at its own position.
     }else if(code>=${firstSleeveGroup*32}.){
       int sleeve=int(floor(code/32.))-${firstSleeveGroup};
       float lift=sleeveLift[sleeve];
@@ -73,6 +74,9 @@ async function initializeStudioRoom(){
   const overheadLights=[[.35,3.744,2.60],[.35,3.744,-1.56]];
   const lampSlope=1.85,lampFar=5.0;
   const projectionBeat=2.50;
+  const sillBase=1.02,sillThickness=.09,sillTop=sillBase+sillThickness;
+  // The rear foot clears the frame at x=5.785, leaving space behind the whole fold, including at the mullion.
+  const sillGuide={frontX:5.566,ridgeX:5.651,rearX:5.740,z:.70,width:.70,height:.338};
   const lensLink=measureLensLink();
   // The offline ray tracer reads this same layout. Axis pairs map world metres to texels.
   const detailCharts={
@@ -712,9 +716,15 @@ async function initializeStudioRoom(){
       light+=reach*(vec3(.47,.42,.36)*(.60+.40*max(-n.x,0.))+vec3(.94,.94,.91)*reveal);
     }
     bool oakSill=mat>.5 && mat<1.5 && pos.x>5.50 && pos.x<5.98 && abs(pos.z-.9)<3.41 && abs(pos.y-1.068)<.05;
+    float sillSky=1.;
     if(oakSill){
+      // The card shelters the varnish from diffuse skylight and its broad
+      // reflection. Direct sunlight is already clipped by the real folded mesh.
+      vec2 edge=abs(pos.xz-vec2(${((sillGuide.frontX+sillGuide.rearX)/2).toFixed(4)},${(sillGuide.z+sillGuide.width/2).toFixed(4)}))
+               -vec2(${((sillGuide.rearX-sillGuide.frontX)/2).toFixed(4)},${(sillGuide.width/2).toFixed(4)});
       float top=smoothstep(.08,.91,n.y);
-      light+=top*vec3(.53,.57,.62)+vec3(.12,.11,.10);
+      sillSky=1.-.78*top*(1.-smoothstep(-.014,.049,max(edge.x,edge.y)));
+      light+=(top*vec3(.53,.57,.62)+vec3(.12,.11,.10))*sillSky;
     }
     if(suede)light+=vec3(.31,.30,.29)*foldLight;
     for(int i=0;i<2;i++){
@@ -820,7 +830,7 @@ async function initializeStudioRoom(){
       float gap=abs(mod(pos.z+2.40+.825,1.65)-.825);
       float sky=smoothstep(.012,.085+.23*(1.-opening),gap);
       float fres=.12+.42*pow(1.-max(dot(n,v),0.),3.);
-      result+=vec3(.98,1.03,1.09)*fres*sky*(.28+.72*opening)*smoothstep(.02,.8,n.y);
+      result+=vec3(.98,1.03,1.09)*fres*sky*sillSky*(.28+.72*opening)*smoothstep(.02,.8,n.y);
     }
     if((mat>10.5 && mat<14.5) || (mat>31.5 && mat<32.5)){
       bool mount=mat>31.5;
@@ -861,7 +871,7 @@ async function initializeStudioRoom(){
         float opal=pow(max(dot(r,normalize(pendant-pos)),0.),mix(47.,13.,rough));
         reflected+=vec3(1.,.85,.68)*opal*detail.y;
       }
-      result+=fresnel*reflected*visibility*visibility*mix(.45,1.,detail.x);
+      result+=sillSky*fresnel*reflected*visibility*visibility*mix(.45,1.,detail.x);
     }
     if(n.y>.90 && (mat>8.5 && mat<9.5 || mat>.5 && mat<1.5 && abs(pos.y-.355)<.004)){
       float shelter=1.-smoothstep(.28,.89,visibility);
@@ -1078,7 +1088,7 @@ async function initializeStudioRoom(){
   box(5.86,3.50,1,.18,.62,12,wall,2);
   box(5.86,1.05,-3.7,.18,2.45,2.6,wall,2);
   box(5.86,1.05,5.6,.18,2.45,2.8,wall,2);
-  softBox(5.73,1.02,.90,.43,.09,6.78,oak,1,.019);
+  softBox(5.73,sillBase,.90,.43,sillThickness,6.78,oak,1,.019);
   for(let j=0;j<=4;j++){
     const z=-2.40+j*1.65;
     softBox(5.85,1.10,z,.13,2.40,.052,steel,1057,.009);
@@ -1199,15 +1209,17 @@ async function initializeStudioRoom(){
     rimBand(lip,mat,'35322f');rimBand(mat,opening,'d7d1c5');
     rimBand(opening,cut,'e4dfd4');rimBand(cut,paper,'bfb9ad');
     const l=(x+.5)/2048,r=(x+w-.5)/2048,t=(y+.5)/2048,b=(y+h-.5)/2048;
-    photoFaces.push({paper,bounds:[z,halfWidth,halfHeight],uv:[[l,b],[r,b],[r,t],[l,t]]});
+    photoFaces.push({paper,outer,bounds:[z,halfWidth,halfHeight],uv:[[l,b],[r,b],[r,t],[l,t]]});
   });
   const photosStart=vertices.length/12;
   const printNormals=Array(4).fill([1,0,0]);
   for(const {paper,bounds,uv} of photoFaces)smoothQuad(paper,printNormals,bounds,29,uv);
   const photosEnd=vertices.length/12;
   table(-4.88,-.18,.59,3.28,.51);for(let i=0;i<5;i++)softBox(-5.14+i*.115,.512,-.18,.087,.036,3.28,oak,1);
-  const tableX=-4.34,tableZ=4.08;
-  softBox(tableX,0,tableZ,2.55,.75,.79,wood,1);
+  const tableX=-4.34,tableZ=4.08,tableWidth=2.55,tableHeight=.75,tableDepth=.79;
+  softBox(tableX,0,tableZ,tableWidth,tableHeight,tableDepth,wood,1);
+  const tableLeft=tableX-tableWidth/2,tableRight=tableX+tableWidth/2;
+  const tableFront=tableZ+tableDepth/2,tableBack=tableZ-tableDepth/2;
   // One mount board. Adjacent cells meet on the same plane at their midpoints.
   // Each opening follows the image area inside the old loose print's white margin.
   const printTableCenterX=tableX+.30,boardScale=.60,boardHalfWidth=.912,boardHalfDepth=.284;
@@ -1324,7 +1336,8 @@ async function initializeStudioRoom(){
   }
   // Optics workbench, camera bodies, a rail with upright lens elements, tools.
   table(2.15,1.73,4.64,1.85,.99);softBox(2.15,.29,1.73,4.45,.065,1.65,'84644c',1);
-  softBox(2.98,.99,2.02,1.5,.018,.71,'636d5a');for(let i=0;i<7;i++)tube([2.35+i*.17,1.025,1.88],[2.4+i*.17,1.025,2.2],.009,.014,'bab2a6',3);
+  const toolMatX=2.98,toolMatWidth=1.5;
+  softBox(toolMatX,.99,2.02,toolMatWidth,.018,.71,'636d5a');for(let i=0;i<7;i++)tube([2.35+i*.17,1.025,1.88],[2.4+i*.17,1.025,2.2],.009,.014,'bab2a6',3);
   const appendFinderGlass=buildRangefinderKit({vertices, face, smoothQuad, softBox, tube, rgb, unit, clip:studioVisibility.clip});
   // Sliding caliper with a jaw, engraved scale and thumb wheel on the cutting mat.
   box(2.93,1.024,2.26,.83,.012,.039,'c8c2b3',3);
@@ -1924,6 +1937,62 @@ async function initializeStudioRoom(){
     // Allow for the animated hem when testing these opaque cells against the camera.
     c[2]-=.020;c[5]+=.020;c[4]-=.014;c[7]+=.014;
   }
+  // Loose sheets sit on the finished room surfaces. Keep their small mesh
+  // separate from the vertex order of the baked lightmap.
+  const paperBuffer=gl.createBuffer(),paperGuides=[];
+  function addPaper(station,tile,topLeft,across,down,tileWidth=512){
+    const topRight=add(topLeft,across),bottomLeft=add(topLeft,down),bottomRight=add(topRight,down);
+    const u=(tile%2*512+.5)/1024,v=(Math.floor(tile/2)*256+.5)/512;
+    const r=u+(tileWidth-1)/1024,b=v+255/512;
+    face(bottomLeft,bottomRight,topRight,topLeft,'ffffff',1030,[[u,b],[r,b],[r,v],[u,v]]);
+    paperGuides.push({station,corners:[topLeft,topRight,bottomRight,bottomLeft]});
+  }
+  // Leave a strip of bare oak between the sample board and the wall guide.
+  const guideX=printTableCenterX+boardHalfWidth*boardScale+.044,guideWidth=.34;
+  const guideDepth=guideWidth*256/galleryCardPixels;
+  addPaper(1,0,[guideX,.751,tableZ-.14],[guideWidth,0,.008],
+    [-.008*guideDepth/guideWidth,0,guideDepth],galleryCardPixels);
+  addPaper(4,2,[-4.73,1.76,-4.856],[.64,-.009,0],[0,-.302,.005]);
+
+  const foldedStart=vertices.length/12;
+  function foldedCard(station,tile,ridge,across,frontFoot,backFoot){
+    addPaper(station,tile,ridge,across,frontFoot);
+    const heel=add(ridge,backFoot),toe=add(ridge,frontFoot);
+    const back=unit(cross([0,1,0],across));
+    const backRidge=add(ridge,mult(back,.003)),crown=add(add(ridge,mult(back,.0014)),[0,.0013,0]);
+    const stock=1024;
+    function acrossCard(from,to,colour){
+      face(from,add(from,across),add(to,across),to,colour,stock);
+    }
+    acrossCard(ridge,crown,'e2d7ba');
+    acrossCard(crown,backRidge,'d9c9a9');
+    acrossCard(backRidge,heel,'b9ae92');
+    // The exposed triangular ends let you see the uninked inside of the fold.
+    const innerFront=mult(back,.0018),innerBack=mult(back,-.0018);
+    acrossCard(add(ridge,innerFront),add(toe,innerFront),'aa9c80');
+    acrossCard(add(heel,innerBack),add(backRidge,innerBack),'a99d83');
+    // A glued return at the base ties the feet together inside the open ends.
+    acrossCard(toe,heel,'8b806a');
+    // Exposed cut edges show the darker core of the card.
+    for(const end of [[0,0,0],across]){
+      for(const [top,foot,inset] of [[ridge,toe,innerFront],[backRidge,heel,innerBack]]){
+        const a=add(top,end),b=add(foot,end);
+        face(a,b,add(b,inset),add(a,inset),'ab997c',stock);
+      }
+    }
+  }
+  const benchWidth=.54,benchRight=toolMatX-toolMatWidth/2-.20;
+  foldedCard(2,1,[benchRight-benchWidth,1.25,2.19],[benchWidth,0,-.075],
+    [.014,.9905-1.25,.107],[-.019,.9905-1.25,-.146]);
+  const sillCardStart=vertices.length/12;
+  foldedCard(5,3,[sillGuide.ridgeX,sillTop+sillGuide.height,sillGuide.z],[0,0,sillGuide.width],
+    [sillGuide.frontX-sillGuide.ridgeX,-sillGuide.height,0],
+    [sillGuide.rearX-sillGuide.ridgeX,-sillGuide.height,0]);
+  const foldedCount=vertices.length/12-foldedStart;
+  const paperVertexCount=vertices.length/12;
+  gl.bindBuffer(gl.ARRAY_BUFFER,paperBuffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(vertices),gl.STATIC_DRAW);
+  vertices.length=0;
+  gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
   // The sun and both overhead fixtures share one static shadow texture.
   const illumination=unit(kawaguchiLight.roomSun || kawaguchiLight.sun);
   const lightRight=unit(cross([0,1,0],illumination)),lightUp=cross(illumination,lightRight);
@@ -1962,6 +2031,13 @@ async function initializeStudioRoom(){
       gl.useProgram(depthProgram);
       const point=gl.getAttribLocation(depthProgram,'point');
       gl.enableVertexAttribArray(point);gl.vertexAttribPointer(point,3,gl.FLOAT,false,48,0);
+      // The folded cards are outside the baked room mesh, but cast into the
+      // same sun and fixture maps as the camera and optical rail.
+      function castFoldedCards(){
+        gl.bindBuffer(gl.ARRAY_BUFFER,paperBuffer);gl.vertexAttribPointer(point,3,gl.FLOAT,false,48,0);
+        gl.drawArrays(gl.TRIANGLES,foldedStart,foldedCount);
+        gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.vertexAttribPointer(point,3,gl.FLOAT,false,48,0);
+      }
       const projection=gl.getUniformLocation(depthProgram,'projection');
       const overheadPass=gl.getUniformLocation(depthProgram,'overheadPass');
       gl.uniformMatrix4fv(projection,false,lightMatrix);
@@ -1972,6 +2048,7 @@ async function initializeStudioRoom(){
       // windowSun already projects the side opening and its mullions analytically.
       drawRoom(0,windowStart);
       drawRoom(windowEnd,casterCount-windowEnd);
+      castFoldedCards();
       // Use the same fixture-local basis as the receiving surface in the shader.
       // Store linear depth so penumbra size follows the blocker/receiver separation.
       gl.colorMask(false,false,true,true);gl.uniform1i(overheadPass,1);
@@ -1986,6 +2063,7 @@ async function initializeStudioRoom(){
         gl.viewport(i%2*tile,Math.floor(i/2)*tile,tile,tile);gl.clear(gl.DEPTH_BUFFER_BIT);
         gl.uniformMatrix4fv(projection,false,matrix);
         drawRoom(0,casterCount);
+        castFoldedCards();
       });
       gl.colorMask(true,true,true,true);
       gl.disableVertexAttribArray(point);gl.enable(gl.DITHER);
@@ -2011,20 +2089,20 @@ async function initializeStudioRoom(){
     gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,rugMap);
     gl.activeTexture(gl.TEXTURE3);gl.bindTexture(gl.TEXTURE_2D,metalMap);
   });
-  const windowLens=createWindowFocus(gl,emitters);
+  const windowLens=createWindowFocus(gl,emitters,{buffer:paperBuffer,first:sillCardStart,count:paperVertexCount-sillCardStart});
   emitters.length=0;
   const drawWindowGlass=createWindowGlazing(gl,requestRender);
   const maxTextureSize=gl.getParameter(gl.MAX_TEXTURE_SIZE);
   const roomLayout=[['p',3],['n',3],['c',3],['uv',2],['m',1]].map(([name,size])=>[gl.getAttribLocation(program,name),size]);
   const fineAttribute=gl.getAttribLocation(program,'bakedUV');
-  function bindRoom(){
-    gl.useProgram(program);gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+  function bindRoom(surfaceBuffer=buffer){
+    gl.useProgram(program);gl.bindBuffer(gl.ARRAY_BUFFER,surfaceBuffer);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,roomIndices||null);
     let offset=0;
     for(const [i,size] of roomLayout){
       gl.enableVertexAttribArray(i);gl.vertexAttribPointer(i,size,gl.FLOAT,false,48,offset);offset+=size*4;
     }
-    if(surfaceRows){
+    if(surfaceRows && surfaceBuffer===buffer){
       gl.bindBuffer(gl.ARRAY_BUFFER,fineBuffer);gl.enableVertexAttribArray(fineAttribute);
       gl.vertexAttribPointer(fineAttribute,2,gl.UNSIGNED_SHORT,true,4,0);
     }else{
@@ -2090,10 +2168,12 @@ async function initializeStudioRoom(){
     fill(0,0,512,128,'#e1d7c6');
     letter(title,24,62,plaqueType,'#302b26','Georgia');
     letter(date,25,101,27,'#433c35','Arial');
+    ctx.textAlign='right';letter('Print notes ↗',488,101,26,'#814936','Arial');
   }));
 
   // Independent power-of-two maps keep grazing-angle detail out of the UI atlas.
   const anisotropy=gl.getExtension('EXT_texture_filter_anisotropic');
+  const paperMap=materialTexture('atlas',0,paintStudioPaper(),false);
   function materialTexture(name,slot,image,repeat,maxAnisotropy=8){
     gl.activeTexture(gl.TEXTURE0+slot);
     const map=gl.createTexture();
@@ -2300,7 +2380,9 @@ async function initializeStudioRoom(){
       gl.bindTexture(gl.TEXTURE_2D,map);
       drawRoom(bounds[0],bounds[1]);
     }
-    gl.bindTexture(gl.TEXTURE_2D,texture);
+    bindRoom(paperBuffer);gl.bindTexture(gl.TEXTURE_2D,paperMap);
+    gl.drawArrays(gl.TRIANGLES,0,paperVertexCount);
+    bindRoom();gl.bindTexture(gl.TEXTURE_2D,texture);
   }
   function railBackgroundCamera(origin){
     const forward=unit(sub(opticalCenters[Math.floor(opticalCenters.length/2)],origin));
@@ -2370,13 +2452,13 @@ async function initializeStudioRoom(){
   let panChanged=false;
   // One browser viewport of scrolling connects adjacent views within a workspace.
   // Gallery frames share an eye height and wall distance, so the wall passes parallel to the viewer.
-  const firstLensStop=2;
+  const firstLensStop=1;
+  const tableViewX=(printTableCenterX-boardHalfWidth*boardScale+guideX+guideWidth)/2;
   const routes=[null,[
-    ['Print table',[printTableCenterX,2.30,4.41],[printTableCenterX,.75,tableZ],44],
+    ['Print table',[tableViewX,2.30,4.41],[tableViewX,.75,tableZ],44],
     ...prints.map((z,i)=>[galleryPrints[i].title,[-2.87,2.045,z],[-5.663,2.045,z],53])
   ],[
     ['Workbench',...stations[2],.85],
-    ['Camera study',[1.03,1.43,3.43],kitPoint(-4,35,2),42,.46],
     ...opticalCenters.map(([x,y,z],i)=>['Lens '+(i+1)+' of '+lensProjects.length,[x+.36,y+.42,z+.95],[x,y+.31,z],56,.475])
   ],[
     ['Project board',...stations[3],.97],['Project overview',[2.69,1.29,-3.12],[2.69,1.29,-4.16],45,.63],
@@ -2478,13 +2560,15 @@ async function initializeStudioRoom(){
   }
   document.addEventListener('pointerup',audioGesture);
   document.addEventListener('keydown',e=>{
-    if(index!==aboutStation || detail.open || !panel.hidden || e.altKey || e.ctrlKey || e.metaKey)return;
+    if(index!==aboutStation || detail.open || !qualityPanel.hidden || e.altKey || e.ctrlKey || e.metaKey)return;
     if(e.key==='Escape' && guitarClose){setGuitarClose(false);return;}
     if(/^[1-6]$/.test(e.key) && !e.repeat){
       e.preventDefault();guitarSound.unlock();guitarPlayer.key(Number(e.key)-1);
     }
   });
-  function placeWallAnchor(anchor,points,raisedTop,minHeight=0){
+  const hotspotFaces=new WeakMap();
+  function placeWallAnchor(anchor,points,raisedTop,minHeight=0,expand='both'){
+    if(anchor.parentElement!==playlistTargets)hotspotFaces.set(anchor,points);
     const corners=points.map(projectPercent);
     if(raisedTop){
       // One stable target covers both poses so a pointer resting on a sleeve
@@ -2497,8 +2581,10 @@ async function initializeStudioRoom(){
     if(minHeight){
       // The projected outline hugs the lettering; give small screens a steady touch target.
       const ys=corners.map(c=>c[1]);
-      const extra=Math.max(0,minHeight*100/canvas.clientHeight-(Math.max(...ys)-Math.min(...ys)))/2;
-      corners.forEach((p,i)=>{p[1]+=i<2?-extra:extra;});
+      const extra=Math.max(0,minHeight*100/canvas.clientHeight-(Math.max(...ys)-Math.min(...ys)));
+      // Adjacent links expand away from their shared printed rule.
+      const above=expand==='top'?extra:expand==='bottom'?0:extra/2;
+      corners.forEach((p,i)=>{p[1]+=i<2?-above:extra-above;});
     }
     const xs=corners.map(c=>c[0]),ys=corners.map(c=>c[1]);
     const left=Math.min(...xs),right=Math.max(...xs),top=Math.min(...ys),bottom=Math.max(...ys);
@@ -2516,7 +2602,9 @@ async function initializeStudioRoom(){
     if(!profileTargets.hidden)for(const {anchor,x,y,width,height} of wallLinks){
       placeWallAnchor(anchor,[paperPoint(x,y),paperPoint(x+width,y),paperPoint(x+width,y+height),paperPoint(x,y+height)]);
     }
-    if(!playlistTargets.hidden)for(const {anchor,corners,raisedTop} of recordShelves.targets)placeWallAnchor(anchor,corners,raisedTop);
+    if(!playlistTargets.hidden)for(const {anchor,corners,raisedTop} of recordShelves.targets){
+      placeWallAnchor(anchor,corners,raisedTop);
+    }
   }
   const lensTargets=document.getElementById('lensTargets');
   const projectedLinks=lensProjects.map((project,i)=>{
@@ -2537,25 +2625,63 @@ async function initializeStudioRoom(){
       else anchor.hidden=true;
     }
   }
-  // Keep keyboard focus rings on the same pieces of paper that pointer rays hit.
+  const paperTargets=document.getElementById('paperTargets');
+  function paperAction(station,corners,label,showAt,open,expand){
+    const button=document.createElement('button');
+    button.type='button';button.className='paperAction';button.setAttribute('aria-label',label);
+    button.onclick=open || (()=>document.getElementById('more').click());
+    paperTargets.append(button);
+    return {station,corners,button,showAt,expand};
+  }
+  const printedActions=[];
+  // Use the same plane for the ink and both links. Its bottom band advances
+  // the tour, while the rest of the sheet opens the reader.
+  for(const {station,corners:[tl,tr,br,bl]} of paperGuides){
+    const cut=(a,b)=>a.map((v,i)=>mix(v,b[i],paperTurnY/256));
+    const left=cut(tl,bl),right=cut(tr,br);
+    const visible=stop=>station===5 || stop===0;
+    const nextLabel=station===1?'Visit the first print on the gallery wall':station===2?'Visit the first lens':'Next view';
+    printedActions.push(
+      paperAction(station,[tl,tr,right,left],paperReadLabels[station],visible,undefined,'top'),
+      paperAction(station,[left,right,br,bl],nextLabel,visible,()=>document.getElementById('nextView').click(),'bottom')
+    );
+  }
+  for(const [i,z] of prints.entries()){
+    printedActions.push(paperAction(1,[[ -5.764,1,z+.384],[-5.764,1,z-.384],
+      [-5.764,.808,z-.384],[-5.764,.808,z+.384]],'Read about '+galleryPrints[i].title,
+      stop=>stop===i+1,()=>readPrint(i)));
+  }
+  const monitor=screens[0];
+  const monitorPoint=(u,v)=>add(add(monitor.center,mult(monitor.right,(u-.5)*monitor.w)),[0,(.5-v)*monitor.h,.001]);
+  printedActions.push(paperAction(3,[[.65,.00],[.99,.00],[.99,.16],[.65,.16]].map(([u,v])=>monitorPoint(u,v)),
+    'Read the selected project',stop=>stop<=1));
+  const {left:bioLeft,right:bioRight,top:bioTop,bottom:bioBottom}=profilePaper.bioLink;
+  printedActions.push(paperAction(aboutStation,[[bioLeft,bioTop],[bioRight,bioTop],[bioRight,bioBottom],[bioLeft,bioBottom]].map(([u,v])=>paperPoint(u,v)),
+    'Read biography',stop=>stop<=1,()=>openProfile(0)));
+  printedActions.push(paperAction(aboutStation,[[44,427],[289,427],[289,467],[44,467]].map(([u,v])=>paperPoint(u,v)),
+    'Read work experience',stop=>stop<=1,()=>openProfile(1)));
+  printedActions.push(paperAction(aboutStation,[[5.738,3.228,5.467],[5.738,3.228,6.093],
+    [5.738,3.092,6.093],[5.738,3.092,5.467]],'Open the track list',stop=>stop!==1,openTrackList));
+  function positionPaperActions(){
+    paperTargets.hidden=!!journey || !!slide || guitarClose || !index;
+    if(paperTargets.hidden)return;
+    const stop=Math.round(progress),touch=matchMedia('(pointer: coarse)').matches;
+    for(const {station,button,corners,showAt,expand} of printedActions){
+      if(index!==station || !showAt(stop)){button.hidden=true;continue;}
+      placeWallAnchor(button,corners,null,touch?35:0,expand);
+    }
+  }
+  function projectCardFace(i){
+    const {x,y}=projectCards[i],lift=deskGraphics.lift(i),angle=.085*lift;
+    const corner=(dx,dy)=>[x+dx,y+cardHeight/2+dy*Math.cos(angle)+.018*lift,
+      cardZ+dy*Math.sin(angle)+.096*lift];
+    const w=cardWidth/2,h=cardHeight/2;
+    return [corner(-w,h),corner(w,h),corner(w,-h),corner(-w,-h)];
+  }
   function positionProjectTargets(){
     const atDesk=index===3 && !journey;
     projectTargets.hidden=!atDesk || progress>.02 || basis.forward[2]>-.94;
-    if(projectTargets.hidden)return;
-    function place(button,points){
-      const xs=points.map(p=>p[0]),ys=points.map(p=>p[1]);
-      const left=Math.min(...xs),top=Math.min(...ys);
-      const width=Math.max(...xs)-left,height=Math.max(...ys)-top;
-      button.hidden=width<=0 || height<=0 || left+width<0 || top+height<0 || left>100 || top>100;
-      if(button.hidden)return;
-      const style=button.style;
-      style.left=left+'%';style.top=top+'%';style.width=width+'%';style.height=height+'%';
-    }
-    for(const [i,{x,y}] of projectCards.entries()){
-      const lift=deskGraphics.lift(i);
-      const corner=(dx,dy)=>projectPercent([x+dx,y+dy+.018*lift,cardZ+(.096+.085*(dy-cardHeight/2))*lift]);
-      place(cardButtons[i],[corner(-cardWidth/2,cardHeight),corner(cardWidth/2,0)]);
-    }
+    if(!projectTargets.hidden)cardButtons.forEach((button,i)=>placeWallAnchor(button,projectCardFace(i)));
   }
   function deskTarget(ray){
     for(const [i,s] of screens.entries()){
@@ -2580,11 +2706,112 @@ async function initializeStudioRoom(){
     const card=projectCards.findIndex(({x,y})=>Math.abs(hit[0]-x)<=cardWidth/2 && hit[1]>=y && hit[1]<=y+cardHeight);
     return t>0 && card>=0?{kind:'card',id:card}:null;
   }
+  // The biography and sleeves occupy adjoining walls, with instruments below.
+  const aboutWest=panelX-panelWidth/2-.17,aboutEast=5.77,aboutBack=6.86,aboutFront=4.76;
+  const aboutTop=panelCenter+panelHeight/2+.13,aboutBase=.025;
+  const aboutEdge=y=>[[aboutWest,y,aboutBack],[aboutEast,y,aboutBack],[aboutEast,y,aboutFront]];
   const stationBounds=[
     [1,[-5.8,.8,-3],[-5.6,3.2,4.2]], [2,[-.18,.3,.77],[4.6,2.1,2.73]],
     [3,[.48,.35,-4.75],[4.68,2.78,-3.32]], [4,[-5.44,.1,-4.79],[-1.69,2.85,-2.9]],
-    [5,[5.78,1.12,-2.36],[5.90,3.45,4.16]]
+    [5,[5.78,1.12,-2.36],[5.90,3.45,4.16]],
+    [aboutStation,[aboutWest,-.008,aboutFront],[aboutEast+.015,aboutTop,aboutBack+.015]],
+    [1,[tableLeft,0,tableBack],[tableRight,boardTop+.002,tableFront],'table']
   ];
+  const outline=document.getElementById('sceneOutline');
+  const outlineTemplate=outline.querySelector('defs g');
+  let canvasHover=null,paperHover=null,activeOutline=null;
+  const entryFaces={
+    // From the doorway the front apron and the top form one silhouette.
+    table:[[tableLeft,tableHeight,tableBack],[tableRight,tableHeight,tableBack],
+      [tableRight,tableHeight,tableFront],[tableRight,0,tableFront],
+      [tableLeft,0,tableFront],[tableLeft,tableHeight,tableFront]],
+    [aboutStation]:[...aboutEdge(aboutTop),[aboutEast,aboutBase,aboutFront],
+      [aboutWest,aboutBase,aboutFront],[aboutWest,aboutBase,aboutBack]],
+    profile:[profileCorners[0],profileCorners[1],profileCorners[3],profileCorners[2]],
+    2:[[-.17,.99,.805],[4.47,.99,.805],[4.47,.99,2.655],[-.17,.99,2.655]],
+    3:[[.60,2.69,cardZ],[3.80,2.69,cardZ],[3.80,1.58,cardZ],[.60,1.58,cardZ]],
+    4:[[-3.295,2.598,-2.78],[-2.305,2.598,-2.78],[-2.305,.018,-2.78],[-3.295,.018,-2.78]],
+    5:[[5.79,3.46,-2.40],[5.79,3.46,4.20],[5.79,1.10,4.20],[5.79,1.10,-2.40]]
+  };
+  function hoverFace(target){
+    if(target.kind==='card')return projectCardFace(target.id);
+    if(target.kind==='monitor'){
+      const s=screens[target.id-1];
+      return [[-1,1],[1,1],[1,-1],[-1,-1]].map(([u,v])=>
+        add(add(s.center,mult(s.right,u*s.w/2)),[0,v*s.h/2,0]));
+    }
+    if(target.kind==='guitar' || target.kind==='strings')return guitars[target.id].perimeter;
+    if(target.frame!==undefined)return photoFaces[target.frame].outer;
+    return entryFaces[target.surface || target.kind] || (target.kind==='station' && entryFaces[target.id]);
+  }
+  function fadeOutline(){
+    if(!activeOutline)return;
+    const {group}=activeOutline;
+    activeOutline=null;
+    if(reducedMotion.matches){group.remove();return;}
+    const opacity=getComputedStyle(group).opacity;
+    group.getAnimations().forEach(a=>a.cancel());
+    group.animate([{opacity},{opacity:0}],{duration:160,easing:'ease-out',fill:'forwards'}).onfinish=()=>group.remove();
+  }
+  function updateOutline(){
+    const focus=document.activeElement;
+    const node=paperHover || (hotspotFaces.has(focus) && focus.matches(':focus-visible')?focus:null);
+    let key,face;
+    if(basis && !journey && !slide && !drag && !press && !detail.open && qualityPanel.hidden){
+      if(node && !node.closest('[hidden]')){
+        key=node;face=hotspotFaces.get(node);
+      }else if(canvasHover){
+        const t=canvasHover;
+        const kind=t.kind==='strings'?'guitar':t.kind;
+        key=[kind,t.id,t.surface,t.frame].join('/');
+        face=hoverFace(t);
+      }
+    }
+    if(!face){fadeOutline();return;}
+    // The near end of the print table can pass behind the eye when looking
+    // across the room. Keep drawing the portion still visible in the doorway.
+    const visible=studioVisibility.clip(face,p=>dot(sub(p,basis.origin),basis.forward)-.04);
+    if(visible.length<3){fadeOutline();return;}
+    const projected=visible.map(projectPercent);
+    // SVG user units are CSS pixels, so the highlight travels at the same
+    // speed along vertical, horizontal and foreshortened edges.
+    const w=canvas.clientWidth/100,h=canvas.clientHeight/100;
+    const edges=projected.map(([x,y])=>[x*w,y*h]);
+    if(key!==activeOutline?.key){
+      fadeOutline();
+      const group=outlineTemplate.cloneNode(true);
+      if(face===entryFaces.table)group.classList.add('print-table');
+      const length=edges.reduce((total,[x,y],i)=>{
+        const [nextX,nextY]=edges[(i+1)%edges.length];
+        return total+Math.hypot(nextX-x,nextY-y);
+      },0);
+      group.style.setProperty('--lap',Math.min(12,Math.max(6,length/125))+'s');
+      outline.append(group);
+      if(!reducedMotion.matches)group.animate([{opacity:0},{opacity:1}],{duration:230,easing:'ease-out'});
+      activeOutline={key,group,points:null};
+    }
+    const points=edges.map(([x,y])=>x.toFixed(2)+','+y.toFixed(2)).join(' ');
+    if(points!==activeOutline.points){
+      for(const line of activeOutline.group.children)line.setAttribute('points',points);
+      activeOutline.points=points;
+    }
+  }
+  function clearOutline(){
+    canvasHover=null;paperHover=null;fadeOutline();
+  }
+  stage.addEventListener('pointerover',e=>{
+    if(e.pointerType==='touch')return;
+    paperHover=hotspotFaces.has(e.target)?e.target:null;
+    if(e.target!==canvas)canvasHover=null;
+    updateOutline();
+  });
+  stage.addEventListener('pointerout',e=>{
+    if(e.target===paperHover){paperHover=null;updateOutline();}
+  });
+  stage.addEventListener('focusin',updateOutline);
+  stage.addEventListener('focusout',()=>queueMicrotask(updateOutline));
+  stage.addEventListener('pointerdown',e=>{if(e.pointerType==='touch')clearOutline();});
+  window.addEventListener('blur',clearOutline);
   // Resolve every scene action here before a pointer can enter camera-look mode.
   function targetAtPointer(e){
     if(!basis || journey)return null;
@@ -2602,15 +2829,16 @@ async function initializeStudioRoom(){
       if(desk)return desk;
     }
     const origin=basis.origin;
-    if((index===0 || (index===aboutStation && selectedStop===0)) && ray[2]>.001){
+    if(index===aboutStation && selectedStop===0 && ray[2]>.001){
       const t=(panelZ-origin[2])/ray[2];
       const [x,y]=add(origin,mult(ray,t));
       if(t>0 && Math.abs(x-panelX)<panelWidth/2 && Math.abs(y-panelCenter)<panelHeight/2){
         return {kind:'profile'};
       }
     }
-    let closest=Infinity,selection=0;
-    for(const [id,min,max] of stationBounds){
+    let closest=Infinity,selection=0,selectedSurface;
+    for(const [id,min,max,surface] of stationBounds){
+      if((id===aboutStation || surface==='table') && index!==0)continue;
       let start=0,end=Infinity;
       for(let j=0;j<3;j++){
         if(Math.abs(ray[j])<.00001){if(origin[j]<min[j]||origin[j]>max[j]){end=-1;break;}continue;}
@@ -2619,26 +2847,30 @@ async function initializeStudioRoom(){
       }
       if(end<start || start>=closest)continue;
       if(id===5 && 1/measureCenter(origin,ray)<start-.020)continue;
-      if(id===2){
-        // There is open air above and below the worktop. Only pick the bench
-        // if the first visible surface along this ray lies inside its bounds.
-        const surface=1/measureCenter(origin,ray);
-        if(!Number.isFinite(surface) || surface<start || surface>end)continue;
-        start=surface;
+      if(id===2 || id===aboutStation || surface==='table'){
+        // Only accept visible surfaces. A ray through the worktop or past
+        // the edge of the About corner may actually land on a different wall.
+        const hitDistance=1/measureCenter(origin,ray);
+        // The meter stores positions in 1/2048 m increments.
+        if(!Number.isFinite(hitDistance) || hitDistance<start-.002 || hitDistance>end+.002)continue;
+        start=hitDistance;
       }
-      if(start<closest){closest=start;selection=id;}
+      if(start<closest){closest=start;selection=id;selectedSurface=surface;}
+    }
+    if(selectedSurface)return {kind:'station',id:selection,surface:selectedSurface};
+    if(selection===1 && selection!==index){
+      const z=origin[2]+closest*ray[2];
+      const frame=prints.reduce((a,v,i)=>Math.abs(z-v)<Math.abs(z-prints[a])?i:a,0);
+      return {kind:'station',id:selection,frame};
     }
     return selection && selection!==index?{kind:'station',id:selection}:null;
   }
   function activateTarget({kind,id}){
     if(kind==='guitar' && !guitarClose)setGuitarClose(true);
-    if(kind==='profile'){
-      if(index!==aboutStation)showStation(aboutStation);
-      window.scrollTo(0,routeHeight);
-    }
+    if(kind==='profile')goToStop(1);
     if(kind==='card')selectProject(id);
     if(kind==='monitor'){
-      if(selectedStop!==id)window.scrollTo(0,routeHeight*id);
+      if(selectedStop!==id)goToStop(id);
       else document.getElementById('more').click();
     }
     if(kind==='station')document.dispatchEvent(new CustomEvent('studio-select',{detail:id}));
@@ -2654,9 +2886,101 @@ async function initializeStudioRoom(){
   document.addEventListener('visibilitychange',requestRender);
   reducedMotion.addEventListener('change',requestRender);
   function scrollUnit(){return Math.max(1,window.innerHeight);}
+  const steps=document.getElementById('viewSteps'),count=document.getElementById('viewCount');
+  const stepButtons=[document.getElementById('previousView'),document.getElementById('nextView')];
+  function adjacent(stop,offset){const n=routes[index].length;return (stop+offset+n)%n;}
+  function shortcutTo(stop){
+    // Set the logical stop at once. The camera takes one glide from the pose
+    // currently on screen, even if the previous move was interrupted.
+    progress=selectedStop=stop;slide=null;
+    if(!journey?.door && !reducedMotion.matches){
+      journey={start:performance.now(),eye:[...eye],heading:[...heading],fov,
+        duration:700,door:false,veil,sway:0,lift:.08};
+    }
+    clearOutline();requestRender();
+  }
+  function goToStop(stop){
+    const last=routes[index].length-1;
+    const from=Math.round(window.scrollY/routeHeight);
+    if(last>1 && Math.abs(stop-from)===last)shortcutTo(stop);
+    window.scrollTo({top:stop*routeHeight,behavior:'instant'});
+    requestRender();
+  }
+  stepButtons.forEach((button,i)=>button.onclick=()=>{
+    goToStop(adjacent(Math.round(window.scrollY/routeHeight),i?1:-1));
+  });
+
+  // Inside the tour, scrolling stays native. Only a new outward gesture
+  // that starts at an endpoint crosses the seam.
+  function edgeDirection(){
+    const route=routes[index];
+    if(!route || guitarClose || detail.open || !qualityPanel.hidden)return 0;
+    if(window.scrollY<=1)return -1;
+    return window.scrollY>=(route.length-1)*routeHeight-1?1:0;
+  }
+  function crossEdge(direction){goToStop(direction>0?0:routes[index].length-1);}
+  let lastWheel=-Infinity,wheelDirection=0,wheelEdge=0,wheelDistance=0,wrappedWheel=false;
+  stage.addEventListener('wheel',e=>{
+    if(!routes[index] || guitarClose || detail.open || !qualityPanel.hidden || e.ctrlKey ||
+       e.target.closest('footer,header') || Math.abs(e.deltaX)>=Math.abs(e.deltaY))return;
+    const direction=Math.sign(e.deltaY);
+    if(e.timeStamp-lastWheel>180 || direction!==wheelDirection){
+      wheelEdge=edgeDirection();wheelDistance=0;wrappedWheel=false;
+    }
+    lastWheel=e.timeStamp;wheelDirection=direction;
+    if(wrappedWheel){e.preventDefault();return;}
+    if(wheelEdge!==direction || edgeDirection()!==direction)return;
+    e.preventDefault();
+    wheelDistance+=Math.abs(e.deltaY)*(e.deltaMode===1?16:e.deltaMode===2?routeHeight:1);
+    if(wheelDistance>=36){wrappedWheel=true;crossEdge(direction);}
+  },{passive:false});
+  let edgeTouch=null;
+  stage.addEventListener('touchstart',e=>{
+    const direction=edgeDirection();
+    edgeTouch=direction && e.touches.length===1 && !e.target.closest('footer,header')?
+      {direction,x:e.touches[0].clientX,y:e.touches[0].clientY}:null;
+  },{passive:true});
+  stage.addEventListener('touchmove',e=>{
+    if(!edgeTouch || e.touches.length!==1){edgeTouch=null;return;}
+    const dx=e.touches[0].clientX-edgeTouch.x,dy=edgeTouch.y-e.touches[0].clientY;
+    if(Math.max(Math.abs(dx),Math.abs(dy))<5)return;
+    if(Math.sign(dy)!==edgeTouch.direction || Math.abs(dx)>Math.abs(dy)){edgeTouch=null;return;}
+    if(e.cancelable)e.preventDefault();
+  },{passive:false});
+  stage.addEventListener('touchend',e=>{
+    if(edgeTouch && e.changedTouches.length){
+      const {direction,x,y}=edgeTouch,t=e.changedTouches[0];
+      const distance=(y-t.clientY)*direction;
+      if(edgeDirection()===direction && distance>=48 && distance>Math.abs(t.clientX-x))crossEdge(direction);
+    }
+    edgeTouch=null;
+  },{passive:true});
+  stage.addEventListener('touchcancel',()=>{edgeTouch=null;},{passive:true});
+  function describeView(stop){
+    const route=routes[index],last=stop===route.length-1;
+    count.textContent=(stop+1)+' / '+route.length;
+    count.setAttribute('aria-label','View '+(stop+1)+' of '+route.length);
+    stepButtons.forEach((button,i)=>{
+      const label=(i?'Next':'Previous')+' view · '+route[adjacent(stop,i?1:-1)][0];
+      button.setAttribute('aria-label',label);button.title=label;
+    });
+    const touch=matchMedia('(pointer: coarse)').matches;
+    const gesture=touch?'Swipe up':'Scroll down';
+    document.getElementById('viewGesture').textContent=gesture+(last?' to return to the start':' to explore');
+    const intros=[
+      '',stop?'Select the wall label to read about this print.':'The table guide introduces the four framed wall prints.',
+      stop===0?'Open the lab notes beside the camera.':'Follow the projected link to the camera project.',
+      stop?'Read the project on the monitor.':'Pick a card to change the project on both screens.',
+      stop<2?'The print log hangs below the drying line.':'Switch the safelight to white to examine the prints.',
+      'Open the folded field notes on the sill.',
+      stop===2?'Select a record to open it in Apple Music.':stop===1?'Select a link on the biography sheet.':'Read the wall print or brush across the guitar strings.'
+    ];
+    document.getElementById('intro').textContent=intros[index];
+  }
   function setGuitarClose(close){
     if(close===guitarClose)return;
     guitarClose=close;
+    steps.hidden=close;
     document.getElementById('backToWall').hidden=!close;
     guitarPlayer.reset();
     journey={start:performance.now(),eye:[...eye],heading:[...heading],fov,
@@ -2664,6 +2988,8 @@ async function initializeStudioRoom(){
     requestRender();
   }
   function openRoute(i){
+    lastWheel=-Infinity;edgeTouch=null;
+    clearOutline();
     const gesture=press || drag;
     if(gesture && canvas.hasPointerCapture(gesture.id))canvas.releasePointerCapture(gesture.id);
     press=null;drag=null;canvas.style.cursor='';
@@ -2673,12 +2999,14 @@ async function initializeStudioRoom(){
     liftCard(-1);
     hoveredSleeve=-1;
     const route=routes[i];
+    steps.hidden=!route;
+    if(!route)document.getElementById('intro').textContent='Select a print, the workbench or the window to step closer.';
     document.body.classList.toggle('tour',!!route);
     routeHeight=scrollUnit();
     document.body.style.height=route ? (route.length*routeHeight)+'px' : '';
     window.scrollTo(0,0);progress=0;selectedStop=0;slide=null;summary='';
     canvas.style.touchAction=i===3?'pan-y pinch-zoom':route?'pan-y':'none';
-    document.getElementById('hint').textContent=route?'Scroll to explore · ← → change room':'Drag to look · Use ← → to explore';
+    document.getElementById('hint').textContent=route?'← → Change room':'Drag to look around';
   }
   window.addEventListener('scroll',()=>{if(guitarClose)setGuitarClose(false);if(routes[index])requestRender();},{passive:true});
   // A display or zoom change can alter the pixel density without resizing the window.
@@ -2710,6 +3038,10 @@ async function initializeStudioRoom(){
       const position=Math.max(0,Math.min(route.length-1,window.scrollY/routeHeight));
       // Cross 58% to commit in either direction. The gap between the forward
       // and reverse thresholds absorbs small trackpad reversals near the boundary.
+      const last=route.length-1;
+      if(last>1 && ((selectedStop===last && position===0) || (selectedStop===0 && position===last))){
+        shortcutTo(Math.round(position));
+      }
       const threshold=.58;
       if(position>=selectedStop+threshold)selectedStop=Math.floor(position+1-threshold);
       else if(position<=selectedStop-threshold)selectedStop=Math.ceil(position-1+threshold);
@@ -2761,7 +3093,7 @@ async function initializeStudioRoom(){
         // Lift the camera around the corner of the table as it tilts up to the wall.
         if(lo===0){
           dest[1]+=.24*Math.sin(Math.PI*u);dest[0]+=.26*Math.sin(Math.PI*u);
-          const tableAngle=2*Math.atan(.45/aspect)*180/Math.PI;
+          const tableAngle=2*Math.atan(.52/aspect)*180/Math.PI;
           angle+=Math.max(0,tableAngle-from[3])*(1-u);
         }
         const narrow=Math.max(0,.74/aspect-1);
@@ -2783,10 +3115,7 @@ async function initializeStudioRoom(){
           document.getElementById('more').firstChild.textContent=nearest===2?'Track list ':'Read biography ';
         }
         document.getElementById('kicker').textContent=['','Gallery','Camera Lab','Software Desk','Darkroom','Lake Kawaguchiko','Studio wall'][index];
-        document.getElementById('intro').textContent=index===aboutStation && nearest===2?'Select a record to open it in Apple Music.':index===6 && nearest===0?'Brush across the guitar strings to play.':index===3 && nearest===0?'Select a project card. Click a monitor for a closer look.':index===1 && nearest===0?'↓ Scroll to the first photograph':index===1 && nearest===1?'↑ Print table   ·   ↓ Next photograph':
-          (nearest===0?'Scroll down to explore':nearest===route.length-1?'Scroll up to revisit':'Scroll to explore');
-        if(index===2 && nearest===firstLensStop-1)document.getElementById('intro').textContent='Scroll to the first lens.';
-        if(index===2 && nearest===0)document.getElementById('intro').textContent='Scroll to the camera.';
+        describeView(nearest);
       }
     }
     const elapsed=Math.min(.08,Math.max(.001,(now-lastTourTime)/1000));
@@ -2795,7 +3124,7 @@ async function initializeStudioRoom(){
     const deskMoving=deskGraphics.frame(now,elapsed,reducedMotion.matches);
     const wiresMoving=guitarPlayer.frame(now,reducedMotion.matches);
     let sleeve=-1;
-    if(index===aboutStation && !journey && !guitarClose && !playlistTargets.hidden && !detail.open && panel.hidden){
+    if(index===aboutStation && !journey && !guitarClose && !playlistTargets.hidden && !detail.open && qualityPanel.hidden){
       sleeve=hoveredSleeve;
       if(sleeve<0)sleeve=recordShelves.targets.findIndex(({anchor})=>anchor===document.activeElement && anchor.matches(':focus-visible'));
     }
@@ -2849,9 +3178,12 @@ async function initializeStudioRoom(){
     const cameraMoving=!!(journey || moving || focusPull || panChanged || returningFromPan);
     panChanged=false;
     if(cameraMoving)restoreSamplingAt=now+samplingSettleDelay;
-    const fastSampling=now<restoreSamplingAt;
-    const scale=Math.min(window.devicePixelRatio||1,maxRenderEdge/Math.max(css.width,css.height),
+    const samplingSettling=now<restoreSamplingAt;
+    const fastSampling=renderQuality.fastSampling || samplingSettling;
+    const longEdge=Math.max(css.width,css.height);
+    const nativeScale=Math.min(window.devicePixelRatio||1,maxRenderEdge/longEdge,
       maxViewportWidth/css.width,maxViewportHeight/css.height);
+    const scale=Math.min(nativeScale*renderQuality.scale,renderQuality.maxEdge/longEdge);
     const w=Math.max(1,Math.round(css.width*scale)),h=Math.max(1,Math.round(css.height*scale));
     if(canvas.width!==w)canvas.width=w;
     if(canvas.height!==h)canvas.height=h;
@@ -2860,6 +3192,7 @@ async function initializeStudioRoom(){
     basis={right,up,forward,sx,sy,origin:eye};
     positionProjectTargets();
     positionWallLinks();
+    positionPaperActions();
     const lens=index===2 && !journey?Math.round(progress)-firstLensStop:-1;
     const reveal=lens>=0?Math.max(0,1-2*Math.abs(progress-firstLensStop-lens)):0;
     const animateProjection=reveal>0 && !reducedMotion.matches && !document.hidden;
@@ -2867,6 +3200,8 @@ async function initializeStudioRoom(){
     // Sample the fast slips at display refresh; the quiet interval uses the ambient rate.
     const trackingWindow=animateProjection && projectionSeconds%projectionBeat<.43;
     positionLensLink(reveal>.98 && !slide?lens:-1);
+    if(journey || slide)canvasHover=null;
+    updateOutline();
     const linkLit=!lensTargets.hidden && projectedLinks[lens].anchor.matches(':hover,:focus-visible');
     const metering=!!drag && drag.travel>=4;
     const cameraPose=[...eye,...forward];
@@ -2956,7 +3291,7 @@ async function initializeStudioRoom(){
         }
         bindRoom();deskGraphics.bind();gl.bindTexture(gl.TEXTURE_2D,texture);
         gl.uniformMatrix4fv(uniform,false,camera);gl.uniform1f(widthUniform,width);
-        gl.uniform1i(fastShadowsUniform,0);
+        gl.uniform1i(fastShadowsUniform,renderQuality.fastSampling?1:0);
         drawOpaqueSurfaces(c=>studioVisibility.intersects(c,backgroundFrustum),true);
         drawPrintedSurfaces(backgroundFrustum);
         return camera;
@@ -2994,7 +3329,7 @@ async function initializeStudioRoom(){
     }
     focusLayers.cloudTime=cloudTime;
     // Keep the blurred window frame stable against the reflection as focus settles outdoors.
-    if(blurInterior)windowLens.finish(lensScale,opticalPower,basis,texture,fastSampling && windowFocus===0,reflections,insideDarkroom?darkroomWhite:-1);
+    if(blurInterior)windowLens.finish(lensScale,opticalPower,basis,texture,floorMap,windowFocus,fastSampling && windowFocus===0,reflections,insideDarkroom?darkroomWhite:-1);
     if(animateWater)finishWater(basis,texture,!(sway || animateProjection || journey || moving || looking || lensMoving),waterBlur);
 
     shown=true;studioLoading.frame();
@@ -3002,12 +3337,13 @@ async function initializeStudioRoom(){
       requestRender();
     }else if((sway || animateProjection) && !gl.isContextLost()){
       ambientTimer=setTimeout(requestRender,1000/24);
-    }else if(fastSampling || movingClouds){
-      ambientTimer=setTimeout(requestRender,Math.min(fastSampling?Math.ceil(restoreSamplingAt-now):Infinity,movingClouds?160:Infinity));
+    }else if(samplingSettling || movingClouds){
+      ambientTimer=setTimeout(requestRender,Math.min(samplingSettling?Math.ceil(restoreSamplingAt-now):Infinity,movingClouds?160:Infinity));
     }}
   function requestRender(){if(!raf)raf=requestAnimationFrame(render);}
   let displayedProject=selectedProject;
   window.studioRoom={toggleGuitarSound(){guitarSound.toggle();},returnToWall(){setGuitarClose(false);},
+    refreshQuality(){focusLayers=null;requestRender();},
     toggleDarkroomLight(){
       const now=performance.now();
       darkroomFrom=darkroomLightAt(now);lightSwitchTime=now;
@@ -3018,7 +3354,7 @@ async function initializeStudioRoom(){
     atPlaylist(){return index===aboutStation && Math.round(progress)===2;},
     viewPlaylist(){
       if(guitarClose)setGuitarClose(false);
-      window.scrollTo(0,Math.round(progress)===2?0:2*routeHeight);
+      goToStop(Math.round(progress)===2?0:2);
     },updateProject(i){
     if(displayedProject===i)return;
     deskGraphics.select(i);
@@ -3027,7 +3363,7 @@ async function initializeStudioRoom(){
     displayedProject=i;focusLayers=null;requestRender();
   },go(i){
     if(!stations[i])return;
-    if(shown && i===index){if(i===3 || i===6)window.scrollTo(0,0);if(guitarClose)setGuitarClose(false);summary='';requestRender();return;}
+    if(shown && i===index){if(i===3 || i===aboutStation)goToStop(0);if(guitarClose)setGuitarClose(false);summary='';requestRender();return;}
     index=i;openRoute(i);
     const distance=Math.hypot(...sub(stations[i][0],eye));
     const door=insideDarkroom!==(i===4);
@@ -3052,6 +3388,7 @@ async function initializeStudioRoom(){
   canvas.style.touchAction='none';
   canvas.addEventListener('pointerdown',e=>{
     if(e.button!==0 || !e.isPrimary)return;
+    clearOutline();
     const target=targetAtPointer(e);
     if(target){
       press={target,id:e.pointerId,x:e.clientX,y:e.clientY,cancelled:false};
@@ -3082,6 +3419,7 @@ async function initializeStudioRoom(){
     if(!drag && e.pointerType==='mouse'){
       const target=targetAtPointer(e);
       liftCard(target?.kind==='card'?target.id:-1);
+      canvasHover=target;paperHover=null;updateOutline();
       canvas.style.cursor=target?'pointer':'';
     }
     if(!drag || e.pointerId!==drag.id)return;
@@ -3096,7 +3434,7 @@ async function initializeStudioRoom(){
     if(drag.travel>=6)liftCard(-1);
     yaw-=dx*.004;pitch=Math.max(-.85,Math.min(.85,pitch+dy*.004));requestRender();
   });
-  canvas.addEventListener('pointerleave',()=>{liftCard(-1);guitarPlayer.reset();});
+  canvas.addEventListener('pointerleave',()=>{canvasHover=null;updateOutline();liftCard(-1);guitarPlayer.reset();});
   function cancelPointer(e){
     if(press?.id===e.pointerId || drag?.id===e.pointerId)releaseLook();
     if(e.pointerType!=='mouse')guitarPlayer.reset();

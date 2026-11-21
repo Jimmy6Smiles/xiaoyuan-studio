@@ -107,6 +107,7 @@ function createProjectDeskGraphics(gl, program, projects, initial, detailSheet) 
     screen.setTransform(scale,0,0,scale,0,0);
     fill(screen,0,0,512,256,'#172828');
     text(screen,'PROJECT OVERVIEW',22,29,16,'#b4d3c1');
+    screen.textAlign='right';text(screen,'Read project  ↗',490,29,19,'#e8e1c6');screen.textAlign='left';
     fill(screen,22,42,468,.9,'#638074');
     text(screen,p.title,21,88,p.title.length>14?36:40,'#fff4df','Georgia, serif');
     paragraph(screen,p.overview,22,122,466,86,22,'#edf1e8');

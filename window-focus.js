@@ -1,6 +1,6 @@
 // Composite the interior at the current optical power, keeping exterior pixels
 // separate so defocused window bars can spread over the lake.
-function createWindowFocus(gl,emitters){
+function createWindowFocus(gl,emitters,sillCard){
   const depthExtension=gl.getExtension('WEBGL_depth_texture');
   const frame=gl.createFramebuffer(),depthBuffer=gl.createRenderbuffer();
   function texture(filter){
@@ -25,7 +25,8 @@ function createWindowFocus(gl,emitters){
   }
   const fullscreen='attribute vec2 corner;void main(){gl_Position=vec4(corner,0.,1.);}';
   const program=link(fullscreen,`precision highp float;
-      uniform sampler2D room,depthMap,softRoom,broadRoom;
+      uniform sampler2D room,depthMap,softRoom,broadRoom,guideMask;
+      uniform float guideFocus;
       uniform bool hasFilters;
       uniform vec3 glowTint;
       uniform vec2 size;
@@ -117,6 +118,10 @@ function createWindowFocus(gl,emitters){
         vec2 uv=gl_FragCoord.xy/size;
         vec4 sharp=texture2D(room,uv);
         if(lensRadius<.15){gl_FragColor=develop(vec4(reflectSurfaces(uv,sharp),sharp.a),uv);return;}
+        // The mask contains only the visible paper. A closer object still
+        // has its own colour and depth, even when it crosses the lettering.
+        float keep=guideFocus>0.?guideFocus*texture2D(guideMask,uv).g:0.;
+        if(keep>.999){gl_FragColor=develop(sharp,uv);return;}
         float radius=radiusAt(uv);
         // Expand near silhouettes over the clear layer. This also catches thin
         // lens barrels and mullions with no depth at the destination pixel.
@@ -128,6 +133,7 @@ function createWindowFocus(gl,emitters){
           radius=max(radius,radiusAt(uv+side*probe)-.14*probe);
           radius=max(radius,radiusAt(uv+side*1.6)-.22);
         }
+        radius*=1.-keep;
         if(radius<3.)sharp.rgb=mix(sharp.rgb,reflectSurfaces(uv,sharp),1.-smoothstep(.3,3.,radius));
         if(radius<.30){gl_FragColor=develop(sharp,uv);return;}
         vec4 sum=sharp;
@@ -140,14 +146,15 @@ function createWindowFocus(gl,emitters){
         }
         gl_FragColor=develop(mix(sharp,sum/(1.+samples),smoothstep(.30,1.,radius)),uv);
       }`);
-  const uniforms=Object.fromEntries(['room','depthMap','size','lensRadius','maxRadius','hasDepth','openingDepth','focusPower','fastSampling','reflectionsEnabled','viewEye','viewRight','viewUp','viewForward','viewScale','hasFilters','glowTint','softRoom','broadRoom'].map(n=>[n,gl.getUniformLocation(program,n)]));
+  const uniforms=Object.fromEntries(['room','depthMap','size','lensRadius','maxRadius','hasDepth','openingDepth','focusPower','fastSampling','reflectionsEnabled','viewEye','viewRight','viewUp','viewForward','viewScale','hasFilters','glowTint','softRoom','broadRoom','guideMask','guideFocus'].map(n=>[n,gl.getUniformLocation(program,n)]));
   const corner=gl.getAttribLocation(program,'corner'),triangle=gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER,triangle);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
   const maskProgram=link(
     'invariant gl_Position;attribute vec4 emitter;uniform mat4 camera;varying mediump float power;void main(){gl_Position=camera*vec4(emitter.xyz,1.);power=emitter.w;}',
-    'precision mediump float;varying mediump float power;void main(){gl_FragColor=vec4(power,0.,0.,1.);}');
+    'precision mediump float;uniform bool guide;varying mediump float power;void main(){gl_FragColor=guide?vec4(0.,1.,0.,1.):vec4(power,0.,0.,1.);}');
   const emitterAttribute=gl.getAttribLocation(maskProgram,'emitter'),maskCamera=gl.getUniformLocation(maskProgram,'camera');
+  const maskGuide=gl.getUniformLocation(maskProgram,'guide');
   const emitterBuffer=gl.createBuffer(),emitterCount=emitters.length/4;
   gl.bindBuffer(gl.ARRAY_BUFFER,emitterBuffer);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(emitters),gl.STATIC_DRAW);
@@ -171,7 +178,7 @@ function createWindowFocus(gl,emitters){
   const filterUniform=Object.fromEntries(['source','mask','texel','first'].map(n=>[n,gl.getUniformLocation(filterProgram,n)]));
   const mask=texture(gl.LINEAR),maskFrame=gl.createFramebuffer();
   const levels=Array.from({length:3},()=>({texture:texture(gl.LINEAR),frame:gl.createFramebuffer()}));
-  let width=0,height=0,ready=false,useDepth=false,filtersReady=false;
+  let width=0,height=0,ready=false,useDepth=false,maskReady=false,filtersReady=false;
   function target(framebuffer,map,w,h){
     gl.bindFramebuffer(gl.FRAMEBUFFER,framebuffer);
     gl.bindTexture(gl.TEXTURE_2D,map);
@@ -202,7 +209,8 @@ function createWindowFocus(gl,emitters){
       target(maskFrame,mask,w,h);
       if(useDepth)gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.TEXTURE_2D,depth,0);
       else gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.RENDERBUFFER,depthBuffer);
-      filtersReady=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
+      maskReady=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
+      filtersReady=maskReady;
       let stride=Math.max(2,Math.min(5,Math.min(w,h)/330));
       for(const level of levels){
         level.w=Math.max(1,Math.ceil(w/stride));level.h=Math.max(1,Math.ceil(h/stride));
@@ -217,9 +225,9 @@ function createWindowFocus(gl,emitters){
     gl.clearColor(.81,.85,.85,1);return true;
   }
   function filterLighting(matrix){
-    if(!filtersReady)return;
-    // Repeat only the luminous triangles against the opaque scene's existing
-    // depth. A bright print or a lamp hidden behind its housing contributes zero.
+    if(!maskReady)return;
+    // Red feeds the lamp glow. Green identifies the window guide at full
+    // resolution, using the same depth attachment as the interior.
     gl.bindFramebuffer(gl.FRAMEBUFFER,maskFrame);
     gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);gl.clearColor(.81,.85,.85,1);
     gl.depthMask(false);gl.depthFunc(gl.LEQUAL);gl.useProgram(maskProgram);
@@ -228,9 +236,13 @@ function createWindowFocus(gl,emitters){
     gl.uniformMatrix4fv(maskCamera,false,matrix);
     gl.bindBuffer(gl.ARRAY_BUFFER,emitterBuffer);
     gl.enableVertexAttribArray(emitterAttribute);gl.vertexAttribPointer(emitterAttribute,4,gl.FLOAT,false,0,0);
-    gl.drawArrays(gl.TRIANGLES,0,emitterCount);
+    gl.uniform1i(maskGuide,0);gl.drawArrays(gl.TRIANGLES,0,emitterCount);
+    gl.bindBuffer(gl.ARRAY_BUFFER,sillCard.buffer);gl.vertexAttribPointer(emitterAttribute,3,gl.FLOAT,false,48,0);
+    gl.uniform1i(maskGuide,1);gl.drawArrays(gl.TRIANGLES,sillCard.first,sillCard.count);
     gl.disable(gl.POLYGON_OFFSET_FILL);
-    gl.depthFunc(gl.LESS);gl.disable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    if(!filtersReady){gl.depthMask(true);return;}
+    gl.disable(gl.DEPTH_TEST);
     gl.useProgram(filterProgram);
     gl.activeTexture(gl.TEXTURE5);gl.bindTexture(gl.TEXTURE_2D,mask);
     gl.uniform1i(filterUniform.mask,5);gl.uniform1i(filterUniform.source,0);
@@ -256,12 +268,14 @@ function createWindowFocus(gl,emitters){
     gl.bindBuffer(gl.ARRAY_BUFFER,triangle);
     gl.enableVertexAttribArray(corner);gl.vertexAttribPointer(corner,2,gl.FLOAT,false,0,0);
   }
-  function finish(scale,power,view,roomAtlas,fastSampling,reflections,darkroomWhite){
+  function finish(scale,power,view,roomAtlas,floorMap,guideFocus,fastSampling,reflections,darkroomWhite){
     gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.useProgram(program);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D,color);
     gl.activeTexture(gl.TEXTURE5);gl.bindTexture(gl.TEXTURE_2D,useDepth?depth:color);
     gl.uniform1i(uniforms.room,0);gl.uniform1i(uniforms.depthMap,5);
+    gl.activeTexture(gl.TEXTURE4);gl.bindTexture(gl.TEXTURE_2D,maskReady?mask:color);
+    gl.uniform1i(uniforms.guideMask,4);gl.uniform1f(uniforms.guideFocus,maskReady?guideFocus:0);
     gl.activeTexture(gl.TEXTURE6);gl.bindTexture(gl.TEXTURE_2D,filtersReady?levels[1].texture:color);
     gl.activeTexture(gl.TEXTURE7);gl.bindTexture(gl.TEXTURE_2D,filtersReady?levels[2].texture:color);
     gl.uniform1i(uniforms.softRoom,6);gl.uniform1i(uniforms.broadRoom,7);
@@ -279,6 +293,7 @@ function createWindowFocus(gl,emitters){
     gl.disable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
     gl.drawArrays(gl.TRIANGLES,0,3);
     gl.disable(gl.BLEND);gl.enable(gl.DEPTH_TEST);
+    gl.activeTexture(gl.TEXTURE4);gl.bindTexture(gl.TEXTURE_2D,floorMap);
     gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,roomAtlas);
   }
   // The five elements share one view from the visitor's eye. Turning in

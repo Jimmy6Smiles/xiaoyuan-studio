@@ -38,7 +38,7 @@ function paintPlaylist(){
   const [x,y,w,h]=shelfTitle;
   ctx.fillStyle='#423831';ctx.fillRect(x,y,w,h);
   ctx.fillStyle='#f8ebd6';ctx.font='italic 64px Georgia,serif';
-  ctx.textAlign='center';ctx.fillText('On rotation',x+w/2,y+68);
+  ctx.textAlign='center';ctx.fillText('On rotation ↗',x+w/2,y+68,w-22);
   ctx.textAlign='left';
   recordPrints.forEach(({track,art:[u,v,w,h],label:[x,y,lw,lh]},i)=>{
     if(playlistCovers.naturalWidth)ctx.drawImage(playlistCovers,(i%3)*512,Math.floor(i/3)*512,512,512,u,v,w,h);

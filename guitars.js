@@ -220,7 +220,24 @@ function buildGuitarCorner({vertices,face,tube,softBox,smoothQuad,rgb}){
     }
     bar([0,.01,-.22],[0,.19,-.055],.010,'494942');
     bar([0,.12,-.052],[0,.54,-.134],.010,'403f3b');
-    return {...spec,...axes,stand,strings,id,head};
+    // Walk the body's existing rim up the right shoulder, around the head
+    // and back down the left shoulder. The fingerboard tapers on both sides.
+    const right=shape.findIndex(([x,y])=>y>=root && x<=half(y));
+    const left=shape.findIndex(([x,y])=>y>=root && x < -half(y));
+    function shoulder(i,side){
+      const [x0,y0]=shape[i-1],[x1,y1]=shape[i];
+      const d0=side*x0-half(y0),d1=side*x1-half(y1);
+      const t=d0/(d0-d1);
+      return point([x0+(x1-x0)*t,y0+(y1-y0)*t,front]);
+    }
+    const bodyPoint=([x,y])=>point([x,y,front]);
+    const nutRight=head.findIndex(([x,y])=>x>0 && Math.abs(y-nut)<1e-8);
+    const perimeter=[
+      ...shape.slice(0,right).map(bodyPoint),shoulder(right,1),
+      ...head.slice(0,nutRight+1).reverse().map(([x,y])=>point([x,y,headZ])),
+      shoulder(left,-1),...shape.slice(left).map(bodyPoint)
+    ];
+    return {...spec,...axes,stand,strings,id,head,perimeter};
   }
   const guitars=specs.map(instrument);
   // Compact combo with a recessed baffle, woven grille and a separate control fascia.
@@ -393,7 +410,8 @@ function createGuitarPlayer(guitars,{canvas,project,visible,requestRender,sound}
       if(!visible(origin,p.map((n,i)=>n+g.origin[i]),.13))continue;
       const along=(y-g.bridge)/(g.nut-g.bridge);
       const width=g.width*(1-along)+.036*along;
-      return {kind:along>=0 && along<=1 && Math.abs(x)<width*.62?'strings':'guitar',id:g.id};
+      const kind=along>=0 && along<=1 && Math.abs(x)<width*.62?'strings':'guitar';
+      return {kind,id:g.id};
     }
     return null;
   }

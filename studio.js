@@ -67,7 +67,7 @@ const galleryPrints=[
 ];
 const stations = [
   { id:'entrance', nav:'Entrance', title:'Xiaoyuan Ma', category:'The Studio', intro:'Photography, software & camera engineering', action:aboutTitle, x:50, y:50 },
-  { id:'gallery', nav:'Gallery', title:'The Gallery', category:'Photography', intro:'Four photographs by Xiaoyuan Ma.', action:'View gallery notes', x:14,y:40,
+  { id:'gallery', nav:'Gallery', title:'The Gallery', category:'Photography', intro:'Four framed photographs on the gallery wall.', notesTitle:'Four wall prints', action:'Read the wall print notes', x:14,y:40,
     notes:galleryPrints.map(print=>[print.title,print.description]) },
   { id:'optics',nav:'Camera lab',title:'The Camera Lab',category:'Camera engineering',intro:'Camera extensions for Hasselblad and Sony.',action:'Open lab notes',x:85,y:77,
     notes:[
@@ -89,25 +89,68 @@ const stationOrder=[0,aboutStation,1,2,3,4,5];
 const el = id => document.getElementById(id);
 let active = 0;
 const detail = el('detail');
-const panel = el('indexPanel');
+let detailRevision=0;
+function showDetail(){
+  ++detailRevision;
+  if(!detail.open){
+    detail.classList.remove('visible');
+    detail.showModal();
+    detail.scrollTop=0;
+    // Commit the initial dialog and backdrop styles before starting their fade.
+    detail.getBoundingClientRect();
+  }
+  detail.classList.add('visible');
+  el('closeDetail').focus({preventScroll:true});
+}
+function dismissDetail(){
+  if(!detail.open || !detail.classList.contains('visible'))return;
+  const revision=++detailRevision;
+  detail.classList.remove('visible');
+  const transitions=detail.getAnimations();
+  if(!transitions.length){detail.close();return;}
+  // Keep the native modal and focus trap until the exit finishes. A reopen
+  // reverses the transition and invalidates this pending close.
+  Promise.allSettled(transitions.map(a=>a.finished)).then(()=>{
+    if(revision===detailRevision && detail.open)detail.close();
+  });
+}
+const qualityPanel=el('qualityPanel'),qualityButton=el('openQuality');
+const qualityPresets=[
+  {id:'high',name:'High',description:'Full resolution',scale:1,maxEdge:Infinity},
+  {id:'balanced',name:'Balanced',description:'Lower resolution',scale:.8,maxEdge:2400},
+  {id:'performance',name:'Performance',description:'Lower resolution · simpler shadows',scale:.6,maxEdge:1440,fastSampling:true}
+];
+const qualityKey='xiaoyuan-studio.render-quality';
+let savedQuality;
+try{savedQuality=localStorage.getItem(qualityKey);}catch{/* Storage can be unavailable in private or offline sessions. */}
+let renderQuality=qualityPresets.find(p=>p.id===savedQuality) || qualityPresets[0];
+el('qualityValue').textContent=renderQuality.name;
 const stage = el('stage');
 const studioLoading=(()=>{
   const pending=new Set(['room','terrainMap','fujiMap','canopyMap','sunMask','shadowAtlas','skyMap','prints','glazing','frame']);
   const progress=el('studioProgress');
+  const loader=el('studioLoader');
   stage.inert=true;
   function reveal(){
     stage.inert=false;document.documentElement.classList.add('studio-open');
-    el('studioLoader').setAttribute('aria-hidden','true');
+    loader.setAttribute('aria-hidden','true');
   }
   function done(task){
     if(pending.delete(task))progress.value=progress.max-pending.size;
   }
   function frame(){
     if(pending.size===1 && pending.has('frame')){
-      done('frame');document.documentElement.classList.add('room-ready');reveal();
+      done('frame');document.documentElement.classList.add('room-ready');
+      const [gaze]=loader.querySelector('.loadGaze').getAnimations();
+      if(!gaze){reveal();return;}
+      // The gaze starts with the frame. End all three hops in this lap.
+      const lap=gaze.effect.getComputedTiming().currentIteration ?? 0;
+      loader.style.setProperty('--logo-loops',String(lap+1));
+      gaze.finished.then(reveal,reveal); // Switching to reduced motion cancels the animation.
     }
   }
   function unavailable(){
+    closeQuality();
     pending.clear();el('renderNotice').hidden=false;
     document.documentElement.classList.remove('room-ready');reveal();
   }
@@ -117,10 +160,10 @@ const studioLoading=(()=>{
   return {done,frame,unavailable,canDraw:()=>pending.size<=1};
 })();
 const navButtons = [];
-function closeIndex(returnFocus = false) {
-  panel.hidden = true;
-  el('openIndex').setAttribute('aria-expanded','false');
-  if (returnFocus) el('openIndex').focus();
+function closeQuality(returnFocus=false){
+  qualityPanel.hidden=true;
+  qualityButton.setAttribute('aria-expanded','false');
+  if(returnFocus)qualityButton.focus({preventScroll:true});
 }
 function showStation(index, sync = true) {
   if (!Number.isInteger(index) || !stations[index]) return;
@@ -138,11 +181,11 @@ function showStation(index, sync = true) {
   el('darkroomLight').hidden=s.id!=='darkroom';
   el('readExperience').hidden=s.id!=='about';
   el('viewPlaylist').hidden=s.id!=='about';
-  closeIndex();
-  if(detail.open) detail.close();
+  closeQuality();
+  if(detail.open)dismissDetail();
   el('kicker').textContent = s.category;
   el('stationTitle').textContent = s.title;
-  el('intro').textContent = s.intro;
+  el('intro').textContent = !index && window.studioRoom?'Select a print, the workbench or the window to step closer.':s.intro;
   el('more').firstChild.textContent = s.action+' ';
   navButtons.forEach((button,i)=>button.setAttribute('aria-current',String(i===index)));
   if(window.studioRoom) window.studioRoom.go(index);
@@ -158,18 +201,35 @@ stationOrder.forEach(i=>{
   button.className='stop'; button.textContent=s.nav;
   button.onclick=()=>showStation(i);
   el('stations').append(button); navButtons[i]=button;
-  const row=document.createElement('button'); row.className='indexItem';
-  const title=document.createElement('span'); title.textContent=s.id==='entrance'?s.category:s.title;
-  const arrow=document.createElement('span'); arrow.textContent='↗'; arrow.setAttribute('aria-hidden','true');
-  row.append(title,arrow); row.onclick=()=>{showStation(i); navButtons[i].focus()};
-  el('indexList').append(row);
 });
-el('openIndex').onclick=()=>{
-  if(!panel.hidden){closeIndex(true);return}
-  panel.hidden=false;el('openIndex').setAttribute('aria-expanded','true');el('closeIndex').focus();
+for(const preset of qualityPresets){
+  const label=document.createElement('label'),radio=document.createElement('input');
+  const name=document.createElement('span'),description=document.createElement('small');
+  name.textContent=preset.name;description.textContent=preset.description;
+  radio.type='radio';radio.name='render-quality';radio.value=preset.id;radio.checked=preset===renderQuality;
+  radio.onchange=()=>{
+    renderQuality=preset;
+    el('qualityValue').textContent=preset.name;
+    window.studioRoom?.refreshQuality();
+    try{localStorage.setItem(qualityKey,preset.id);}catch{/* Keep the choice for this visit. */}
+  };
+  label.append(name,description,radio);el('qualityOptions').append(label);
+}
+qualityButton.onclick=()=>{
+  if(!qualityPanel.hidden){closeQuality(true);return;}
+  qualityPanel.hidden=false;qualityButton.setAttribute('aria-expanded','true');
+  qualityPanel.querySelector('input:checked').focus({preventScroll:true});
 };
-el('closeIndex').onclick=()=>closeIndex(true);
-stage.addEventListener('pointerdown',e=>{if(!panel.hidden&&!panel.contains(e.target)&&!el('openIndex').contains(e.target))closeIndex()});
+el('closeQuality').onclick=()=>closeQuality(true);
+const qualityControl=qualityButton.parentElement;
+qualityControl.addEventListener('focusout',e=>{
+  if(!qualityPanel.hidden && e.relatedTarget && !qualityControl.contains(e.relatedTarget))closeQuality();
+});
+stage.addEventListener('pointerdown',e=>{
+  if(qualityPanel.hidden || qualityControl.contains(e.target))return;
+  closeQuality();
+  if(e.target===el('room'))e.stopPropagation();
+},{capture:true});
 function addNote(heading,body,link){
   const section=document.createElement('section');section.className='note';
   const h=document.createElement('h3'),p=document.createElement('p');
@@ -192,7 +252,13 @@ function openProfile(id){
     links.append(profileAnchor(profileRefs.linkedin),' · ',profileAnchor(profileRefs.github));
     el('notes').append(links);
   }
-  detail.showModal();el('closeDetail').focus();
+  showDetail();
+}
+function readPrint(i){
+  const print=galleryPrints[i];
+  el('detailType').textContent='Gallery · Print notes';
+  el('detailTitle').textContent=print.title;el('notes').replaceChildren();
+  addNote(print.date,print.description);showDetail();
 }
 el('readExperience').onclick=()=>openProfile(1);
 function openTrackList(){
@@ -206,7 +272,7 @@ function openTrackList(){
     title.textContent=track.title;artist.textContent=[track.artist,track.version].filter(Boolean).join(' · ');
     text.append(title,artist);link.replaceChildren(cover,text);item.append(link);list.append(item);
   });
-  el('notes').replaceChildren(list);detail.showModal();el('closeDetail').focus();
+  el('notes').replaceChildren(list);showDetail();
 }
 el('viewPlaylist').onclick=()=>window.studioRoom?window.studioRoom.viewPlaylist():openTrackList();
 el('guitarSound').onclick=()=>window.studioRoom?.toggleGuitarSound();
@@ -219,7 +285,7 @@ el('more').onclick=()=>{
     return
   }
   const s=stations[active];
-  el('detailType').textContent=s.category;el('detailTitle').textContent=s.title;
+  el('detailType').textContent=s.category;el('detailTitle').textContent=s.notesTitle || s.title;
   const notes=el('notes');notes.replaceChildren();
   if(s.id==='software'){
     const picker=document.createElement('select');
@@ -240,14 +306,15 @@ el('more').onclick=()=>{
     for(const note of s.notes)addNote(...note);
   }
   if(s.disclaimer){const p=document.createElement('p');p.className='small';p.textContent=s.disclaimer;notes.append(p)}
-  detail.showModal();el('closeDetail').focus();
+  showDetail();
 };
-el('closeDetail').onclick=()=>detail.close();
-detail.addEventListener('click',e=>{if(e.target===detail)detail.close()});
+el('closeDetail').onclick=dismissDetail;
+detail.addEventListener('click',e=>{if(e.target===detail)dismissDetail();});
+detail.addEventListener('cancel',e=>{e.preventDefault();dismissDetail();});
 document.addEventListener('keydown',e=>{
   if(detail.open||e.altKey||e.ctrlKey||e.metaKey)return;
-  if(e.key==='Escape'&&!panel.hidden){closeIndex(true);return}
-  if(panel.hidden&&(e.key==='ArrowRight'||e.key==='ArrowLeft')){
+  if(e.key==='Escape'&&!qualityPanel.hidden){closeQuality(true);return}
+  if(qualityPanel.hidden&&(e.key==='ArrowRight'||e.key==='ArrowLeft')){
     e.preventDefault();
     const next=stationOrder.indexOf(active)+(e.key==='ArrowRight'?1:-1);
     showStation(stationOrder[(next+stationOrder.length)%stationOrder.length]);

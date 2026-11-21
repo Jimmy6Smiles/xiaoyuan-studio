@@ -17,7 +17,7 @@ const biographyLines=[
   ['I build full-stack applications and'],
   ['create real-time 3D scenes.']
 ];
-const profilePaper={width:800,height:960,workTop:427};
+const profilePaper={width:800,height:960,workTop:427,bioLink:{left:571,right:756,top:91,bottom:136}};
 const profileMount={centerX:3.94,centerY:2.30,front:6.776,width:1.90,height:2.28};
 const profileWall = [
   {label:'About', title:'Xiaoyuan (Jimmy) Ma',
@@ -94,7 +94,10 @@ function paintProfileWall(limit,links){
     ctx.drawImage(profilePortrait,(w-side)*.63,(h-side)*.13,side,side,left,68,240,240);
   }
   text(bio.title,left,346,'italic 22px '+serif,ink);
-  text('About',column-2,126,'bold 73px '+serif,ink);
+  text('About',column-2,126,'bold 68px '+serif,ink);
+  ctx.textAlign='right';
+  text('Read biography  ↗',profilePaper.bioLink.right,122,'22px '+sans,brick);
+  ctx.textAlign='left';
   biographyLines.forEach((row,i)=>text(row,column,171+i*34,'25px '+sans,ink));
   line(left,368,right,368,hair,1);
   text([profileRefs.degree,'  /  Class of 2029'],left,397,'21px '+sans,muted);
@@ -104,7 +107,7 @@ function paintProfileWall(limit,links){
 
   const band=profilePaper.workTop;
   ctx.fillStyle=brick;ctx.fillRect(left,band,244,40);
-  text('WORK EXPERIENCE',left+13,band+28,'700 23px '+sans,paper);
+  text('WORK EXPERIENCE ↗',left+12,band+28,'700 21px '+sans,paper);
   line(left,band+40,right,band+40,brick,3);
   ctx.textAlign='right';text(job.date,right,band+27,'italic 23px '+serif,muted);ctx.textAlign='left';
   text(job.title,left-2,544,'54px '+serif,ink);
