@@ -3173,13 +3173,15 @@ async function initializeStudioRoom(){
       if(t>=1)focusPull=null;
     }
     const a=heading[0]+yaw,e=Math.max(-1.3,Math.min(1.3,heading[1]+pitch)),forward=[Math.sin(a)*Math.cos(e),Math.sin(e),-Math.cos(a)*Math.cos(e)],right=unit(cross(forward,[0,1,0])),up=cross(right,forward);
-    // Use cheaper shader sampling during camera travel at the same canvas size.
+    // Shadows keep the preset's filter during travel. Only the lens blur
+    // can use fewer samples until the camera settles.
     const returningFromPan=!drag && !press && Math.abs(yaw)+Math.abs(pitch)>.003;
     const cameraMoving=!!(journey || moving || focusPull || panChanged || returningFromPan);
     panChanged=false;
     if(cameraMoving)restoreSamplingAt=now+samplingSettleDelay;
     const samplingSettling=now<restoreSamplingAt;
-    const fastSampling=renderQuality.fastSampling || samplingSettling;
+    const fastShadows=!!renderQuality.fastSampling;
+    const fastLensSampling=windowFocus===0 && (fastShadows || samplingSettling);
     const longEdge=Math.max(css.width,css.height);
     const nativeScale=Math.min(window.devicePixelRatio||1,maxRenderEdge/longEdge,
       maxViewportWidth/css.width,maxViewportHeight/css.height);
@@ -3245,7 +3247,7 @@ async function initializeStudioRoom(){
       (focusLayers.water || !portals.length || focusLayers.waterBlur===waterBlur) &&
       mat.every((v,i)=>v===focusLayers.matrix[i]);
     const reuseOutside=sameView && cloudTime===focusLayers.cloudTime;
-    const reuse=useLayer && sameView && focusLayers.interior && focusLayers.darkroomWhite===darkroomWhite && focusLayers.fastSampling===fastSampling &&
+    const reuse=useLayer && sameView && focusLayers.interior && focusLayers.darkroomWhite===darkroomWhite && focusLayers.fastShadows===fastShadows &&
       focusLayers.linkLit===linkLit && !sway && !animateProjection;
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     if(reuseOutside)cancelWaves();
@@ -3259,7 +3261,7 @@ async function initializeStudioRoom(){
       gl.uniform1fv(sleeveUniform,sleeveLifts);
       gl.uniform1f(curtainUniform,sway?(now*.00076)%turn:0);
       gl.uniform1f(darkroomLightUniform,darkroomWhite);
-      gl.uniform1i(fastShadowsUniform,fastSampling?1:0);
+      gl.uniform1i(fastShadowsUniform,fastShadows?1:0);
       gl.uniform3fv(eyeUniform,eye);gl.uniformMatrix4fv(uniform,false,mat);
       const inView=c=>studioVisibility.intersects(c,frustum) && (insideDarkroom?
         c[2]<-1.53 && c[4]<-2.71 && c[5]>-5.97 && c[7]>-5.05 && c[3]<3.26:
@@ -3291,7 +3293,6 @@ async function initializeStudioRoom(){
         }
         bindRoom();deskGraphics.bind();gl.bindTexture(gl.TEXTURE_2D,texture);
         gl.uniformMatrix4fv(uniform,false,camera);gl.uniform1f(widthUniform,width);
-        gl.uniform1i(fastShadowsUniform,renderQuality.fastSampling?1:0);
         drawOpaqueSurfaces(c=>studioVisibility.intersects(c,backgroundFrustum),true);
         drawPrintedSurfaces(backgroundFrustum);
         return camera;
@@ -3299,7 +3300,6 @@ async function initializeStudioRoom(){
       if(deferMounts){
         bindRoom();deskGraphics.bind();gl.bindTexture(gl.TEXTURE_2D,texture);
         gl.uniformMatrix4fv(uniform,false,mat);gl.uniform1f(widthUniform,w);
-        gl.uniform1i(fastShadowsUniform,fastSampling?1:0);
         studioVisibility.drawRanges(mounts,inView,drawRoom);
       }
       gl.enable(gl.BLEND);gl.blendFuncSeparate(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA,gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
@@ -3325,11 +3325,12 @@ async function initializeStudioRoom(){
       }
       gl.depthMask(true);gl.disable(gl.BLEND);
       if(blurInterior)windowLens.filterLighting(mat);
-      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,darkroomWhite,linkLit,fastSampling};
+      focusLayers={w,h,matrix:mat,water:animateWater,waterBlur,interior:blurInterior,reduced:reducedMotion.matches,dark:insideDarkroom,darkroomWhite,linkLit,fastShadows};
     }
     focusLayers.cloudTime=cloudTime;
     // Keep the blurred window frame stable against the reflection as focus settles outdoors.
-    if(blurInterior)windowLens.finish(lensScale,opticalPower,basis,texture,floorMap,windowFocus,fastSampling && windowFocus===0,reflections,insideDarkroom?darkroomWhite:-1);
+    if(blurInterior)windowLens.finish(lensScale,opticalPower,basis,texture,floorMap,windowFocus,fastLensSampling,reflections,insideDarkroom?darkroomWhite:-1);
+    const refineLens=blurInterior && lensScale>0 && fastLensSampling && !fastShadows;
     if(animateWater)finishWater(basis,texture,!(sway || animateProjection || journey || moving || looking || lensMoving),waterBlur);
 
     shown=true;studioLoading.frame();
@@ -3337,8 +3338,8 @@ async function initializeStudioRoom(){
       requestRender();
     }else if((sway || animateProjection) && !gl.isContextLost()){
       ambientTimer=setTimeout(requestRender,1000/24);
-    }else if(samplingSettling || movingClouds){
-      ambientTimer=setTimeout(requestRender,Math.min(samplingSettling?Math.ceil(restoreSamplingAt-now):Infinity,movingClouds?160:Infinity));
+    }else if(refineLens || movingClouds){
+      ambientTimer=setTimeout(requestRender,Math.min(refineLens?Math.ceil(restoreSamplingAt-now):Infinity,movingClouds?160:Infinity));
     }}
   function requestRender(){if(!raf)raf=requestAnimationFrame(render);}
   let displayedProject=selectedProject;
