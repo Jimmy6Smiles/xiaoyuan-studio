@@ -95,9 +95,8 @@ function paintProfileWall(limit,links){
   }
   text(bio.title,left,346,'italic 22px '+serif,ink);
   text('About',column-2,126,'bold 68px '+serif,ink);
-  ctx.textAlign='right';
-  text('Read biography  ↗',profilePaper.bioLink.right,122,'22px '+sans,brick);
-  ctx.textAlign='left';
+  const bioLink=profilePaper.bioLink;
+  paintLinkLabel(ctx,'Read biography',bioLink.right,122,'22px '+sans,brick,'right',bioLink.right-bioLink.left);
   biographyLines.forEach((row,i)=>text(row,column,171+i*34,'25px '+sans,ink));
   line(left,368,right,368,hair,1);
   text([profileRefs.degree,'  /  Class of 2029'],left,397,'21px '+sans,muted);
@@ -107,7 +106,7 @@ function paintProfileWall(limit,links){
 
   const band=profilePaper.workTop;
   ctx.fillStyle=brick;ctx.fillRect(left,band,244,40);
-  text('WORK EXPERIENCE ↗',left+12,band+28,'700 21px '+sans,paper);
+  paintLinkLabel(ctx,'WORK EXPERIENCE',left+12,band+28,'700 21px '+sans,paper,'left',244-24);
   line(left,band+40,right,band+40,brick,3);
   ctx.textAlign='right';text(job.date,right,band+27,'italic 23px '+serif,muted);ctx.textAlign='left';
   text(job.title,left-2,544,'54px '+serif,ink);

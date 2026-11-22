@@ -1,3 +1,26 @@
+// The same outline serves the HTML actions and the lettering on scene textures.
+const printedLinkArrow=new Path2D(document.getElementById('linkArrowPath').getAttribute('d'));
+function paintLinkLabel(ctx,label,x,baseline,font,color,align='left',maxWidth=Infinity){
+  ctx.save();
+  ctx.font=font;
+  const capHeight=ctx.measureText('H').actualBoundingBoxAscent;
+  const size=capHeight*1.2,gap=capHeight*.45;
+  const textWidth=Math.min(ctx.measureText(label).width,maxWidth-gap-size);
+  const width=textWidth+gap+size;
+  if(align==='right')x-=width;
+  if(align==='center')x-=width/2;
+  ctx.textAlign='left';
+  ctx.fillStyle=color;
+  ctx.fillText(label,x,baseline,textWidth);
+  ctx.translate(x+textWidth+gap,baseline-(capHeight+size)/2);
+  ctx.scale(size/12,size/12);
+  ctx.strokeStyle=color;
+  ctx.lineWidth=1.3;
+  ctx.lineCap=ctx.lineJoin='round';
+  ctx.stroke(printedLinkArrow);
+  ctx.restore();
+}
+
 // Four pieces of printed matter, in reading order from top left. Each uses a
 // half-texel inset so distant paper edges don't pick up ink from the next sheet.
 const paperReadLabels={1:'Read the wall print notes',2:'Open lab notes',4:'Read process notes',5:'Read lake field notes'};
@@ -65,7 +88,7 @@ function paintStudioPaper() {
     for(let i=0;i<6;i++){g.fillStyle='hsl(28 7% '+(20+i*11)+'%)';g.fillRect(324+i*27,16,27,25);}
     line([[22,56],[489,56]],ink);
     type('Print log',21,122,58,serif);
-    type('Process notes  ↗',22,167,33,sans,rust);
+    paintLinkLabel(g,'Process notes',22,167,'33px '+sans,rust);
     line([[22,paperTurnY],[489,paperTurnY]],'#978b78');
     type('Scroll to the drying line  ↓',22,229,32);
   });
@@ -84,7 +107,7 @@ function paintStudioPaper() {
     for(let i=0;i<6;i++)line([[19+i%3*15,164+i*8],[209-i%4*16,164+i*8]],'#99a294',1.4);
     line([[246,0],[246,256]],'#b8b4a1',3);line([[249,0],[249,256]],'#f6efdd',2);
     type('Lake',265,74,55,serif);type('Kawaguchiko',264,115,37,serif);
-    type('Field notes  ↗',265,166,32,sans,rust);
+    paintLinkLabel(g,'Field notes',265,166,'32px '+sans,rust);
     line([[265,paperTurnY],[491,paperTurnY]],'#b1a48b');
     type('Scroll along the shore',265,228,23);
   });

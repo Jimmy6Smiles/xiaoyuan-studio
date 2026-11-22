@@ -37,9 +37,7 @@ function paintPlaylist(){
   const sans='"Segoe UI","Microsoft YaHei",sans-serif';
   const [x,y,w,h]=shelfTitle;
   ctx.fillStyle='#423831';ctx.fillRect(x,y,w,h);
-  ctx.fillStyle='#f8ebd6';ctx.font='italic 64px Georgia,serif';
-  ctx.textAlign='center';ctx.fillText('On rotation ↗',x+w/2,y+68,w-22);
-  ctx.textAlign='left';
+  paintLinkLabel(ctx,'On rotation',x+w/2,y+68,'italic 64px Georgia,serif','#f8ebd6','center',w-22);
   recordPrints.forEach(({track,art:[u,v,w,h],label:[x,y,lw,lh]},i)=>{
     if(playlistCovers.naturalWidth)ctx.drawImage(playlistCovers,(i%3)*512,Math.floor(i/3)*512,512,512,u,v,w,h);
     ctx.fillStyle='#f2e9d8';ctx.fillRect(x,y,lw,lh);

@@ -2168,7 +2168,7 @@ async function initializeStudioRoom(){
     fill(0,0,512,128,'#e1d7c6');
     letter(title,24,62,plaqueType,'#302b26','Georgia');
     letter(date,25,101,27,'#433c35','Arial');
-    ctx.textAlign='right';letter('Print notes ↗',488,101,26,'#814936','Arial');
+    paintLinkLabel(ctx,'Print notes',488,101,'26px Arial','#814936','right');
   }));
 
   // Independent power-of-two maps keep grazing-angle detail out of the UI atlas.
